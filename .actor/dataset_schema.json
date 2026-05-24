@@ -20,7 +20,7 @@
         "type": "string",
         "title": "Status",
         "description": "Scan status.",
-        "enum": ["success", "error", "not_found"],
+        "enum": ["success", "error", "not_found", "public_info"],
         "example": "success"
       },
       "x402Version": {
