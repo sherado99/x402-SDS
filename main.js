@@ -286,6 +286,8 @@ async function discoverFromOpenAPI(base, timeout) {
   return null;
 }
 
+// ========== PUBLIC INFORMATION DISCOVERY ==========
+
 async function discoverFromHealth(base, timeout) {
   try {
     const response = await got(`https://${base}/health`, {
@@ -299,21 +301,66 @@ async function discoverFromHealth(base, timeout) {
     const data = JSON.parse(response.body);
     const candidates = [];
 
-    const services = data.endpoints || data.services || data.routes || [];
-    for (const svc of services) {
-      const path = svc.endpoint || svc.path || svc.url;
-      if (!path) continue;
-      candidates.push({
-        path,
-        method: svc.method || 'GET',
-        body: null,
-        source: '/health',
-        rawPrice: String(svc.price || svc.x402Price || ''),
-        network: svc.network || '',
-        asset: svc.asset || '',
-        label: svc.name || svc.id || '',
-        description: svc.description || '',
-      });
+    // Sentinel style: data.endpoints adalah OBJECT, bukan array
+    if (data.endpoints && typeof data.endpoints === 'object') {
+      for (const [path, info] of Object.entries(data.endpoints)) {
+        if (!path) continue;
+        
+        // Ekstrak angka dari string harga seperti "$0.008 USDC"
+        let rawPrice = '';
+        let network = data.network || '';
+        let asset = '';
+        
+        if (typeof info.price === 'string') {
+          const match = info.price.match(/\$([\d.]+)/);
+          if (match) {
+            // Konversi ke atomic units (USDC = 6 decimals)
+            const usdc = parseFloat(match[1]);
+            rawPrice = String(Math.round(usdc * 1000000));
+          }
+        }
+        
+        // Fallback: jika price adalah angka
+        if (!rawPrice && typeof info.price === 'number') {
+          rawPrice = String(info.price);
+        }
+        
+        // Tandai endpoint gratis
+        if (info.price === 'free' || info.price === '0') {
+          rawPrice = '0';
+        }
+
+        candidates.push({
+          path,
+          method: 'GET',
+          body: null,
+          source: '/health',
+          rawPrice,
+          network,
+          asset,
+          label: info.description || path,
+          description: info.description || '',
+        });
+      }
+    }
+    
+    // Fallback: jika endpoints adalah array (format lain)
+    if (Array.isArray(data.endpoints)) {
+      for (const svc of data.endpoints) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+        candidates.push({
+          path,
+          method: svc.method || 'GET',
+          body: null,
+          source: '/health',
+          rawPrice: String(svc.price || svc.x402Price || ''),
+          network: svc.network || data.network || '',
+          asset: svc.asset || '',
+          label: svc.name || svc.id || svc.description || '',
+          description: svc.description || '',
+        });
+      }
     }
 
     return candidates.length > 0 ? candidates : null;
@@ -322,7 +369,6 @@ async function discoverFromHealth(base, timeout) {
     return null;
   }
 }
-
 // ========== ENDPOINT VERIFICATION ==========
 
 async function checkEndpoint(base, candidate, timeout) {
