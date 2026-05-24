@@ -16,8 +16,9 @@
     },
     "status": {
       "type": "string",
-      "description": "Scan status: success, error, or not_found.",
+      "description": "Scan status: success, error, not_found, or public_info.",
       "title": "Status",
+      "enum": ["success", "error", "not_found", "public_info"],
       "template": "{{status}}"
     },
     "x402Version": {
