@@ -273,7 +273,7 @@ function buildExampleBody(schema) {
   return body;
 }
 
-// ========== ENDPOINT CHECKER ==========
+// ========== ENDPOINT CHECKER (DIPERBARUI) ==========
 
 async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
   const url = `https://${base}${path}`;
@@ -294,7 +294,6 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
     options.json = body;
   }
 
-  // ========== PROXY ==========
   if (proxyUrl) {
     console.log(`[PROXY] Using residential proxy for ${url}`);
     const { HttpsProxyAgent } = await import('https-proxy-agent');
@@ -317,12 +316,17 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
       const responseBody = JSON.parse(response.body);
       if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
         const offer = responseBody.accepts[0];
+        
+        // === PERBAIKAN: baca kedua variasi field harga ===
+        const rawAmount = offer.maxAmountRequired || offer.amount || '';
+        const priceUSDC = rawAmount ? (parseInt(rawAmount, 10) / 1000000).toFixed(6) : '';
+
         return {
           domain: base,
           path,
           status: 'success',
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-          price: offer.amount || '',
+          price: rawAmount,                          // Nilai atomik mentah (misal "1000")
           network: offer.network || '',
           asset: offer.asset || '',
           payTo: offer.payTo || '',
