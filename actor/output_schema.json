@@ -1,0 +1,103 @@
+{
+  "actorOutputSchemaVersion": 1,
+  "title": "X402 Domain Scanner Result",
+  "properties": {
+    "domain": {
+      "type": "string",
+      "description": "Root domain that was scanned.",
+      "title": "Domain",
+      "template": "{{domain}}"
+    },
+    "path": {
+      "type": "string",
+      "description": "Full path of the endpoint that was checked.",
+      "title": "Path",
+      "template": "{{path}}"
+    },
+    "status": {
+      "type": "string",
+      "description": "Scan status: success, error, or not_found.",
+      "title": "Status",
+      "template": "{{status}}"
+    },
+    "x402Version": {
+      "type": "integer",
+      "description": "Version of the X402 protocol detected.",
+      "title": "X402 Version",
+      "template": "{{x402Version}}"
+    },
+    "price": {
+      "type": "string",
+      "description": "Price per call in the smallest unit of the payment token.",
+      "title": "Price",
+      "template": "{{price}}"
+    },
+    "network": {
+      "type": "string",
+      "description": "Blockchain network for payment (e.g., eip155:8453 for Base).",
+      "title": "Network",
+      "template": "{{network}}"
+    },
+    "asset": {
+      "type": "string",
+      "description": "Token contract address for payment.",
+      "title": "Asset",
+      "template": "{{asset}}"
+    },
+    "payTo": {
+      "type": "string",
+      "description": "Wallet address that receives the payment.",
+      "title": "Pay To",
+      "template": "{{payTo}}"
+    },
+    "label": {
+      "type": "string",
+      "description": "Product label from the X402 offer.",
+      "title": "Label",
+      "template": "{{label}}"
+    },
+    "description": {
+      "type": "string",
+      "description": "Product description from the X402 offer.",
+      "title": "Description",
+      "template": "{{description}}"
+    },
+    "httpStatus": {
+      "type": "integer",
+      "description": "HTTP status code returned by the endpoint.",
+      "title": "HTTP Status",
+      "template": "{{httpStatus}}"
+    },
+    "responseTimeMs": {
+      "type": "integer",
+      "description": "Response time in milliseconds.",
+      "title": "Response Time (ms)",
+      "template": "{{responseTimeMs}}"
+    },
+    "errorMessage": {
+      "type": "string",
+      "description": "Error message if the endpoint check failed.",
+      "title": "Error Message",
+      "template": "{{errorMessage}}"
+    },
+    "timestamp": {
+      "type": "string",
+      "description": "Scan timestamp in ISO 8601 format.",
+      "title": "Timestamp",
+      "template": "{{timestamp}}"
+    },
+    "download_docx": {
+      "type": "string",
+      "description": "URL to download the full scan report as a Microsoft Word (.docx) file.",
+      "title": "Download DOCX",
+      "template": "{{download_docx}}"
+    },
+    "download_pdf": {
+      "type": "string",
+      "description": "URL to download the full scan report as a PDF file.",
+      "title": "Download PDF",
+      "template": "{{download_pdf}}"
+    }
+  },
+  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf"]
+}
