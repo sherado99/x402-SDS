@@ -122,6 +122,11 @@ if (!domain) {
   await Actor.exit();
 }
 
+// Bersihkan domain: buang protokol & path
+if (domain) {
+  domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+}
+
 // Determine paths to scan
 let pathsToCheck = [];
 if (manualPaths && manualPaths.trim()) {
