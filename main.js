@@ -303,14 +303,17 @@ async function discoverFromHealth(base, timeout) {
 
     // Sentinel style: data.endpoints adalah OBJECT, bukan array
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
+      console.log(`[DEBUG-HEALTH] Found object endpoints with ${Object.keys(data.endpoints).length} keys`);
+      
       for (const [path, info] of Object.entries(data.endpoints)) {
         if (!path) continue;
-        
+        console.log(`[DEBUG-HEALTH] Processing ${path}: price=${info.price}, type=${typeof info.price}`);
+
         // Ekstrak angka dari string harga seperti "$0.008 USDC"
         let rawPrice = '';
         let network = data.network || '';
         let asset = '';
-        
+
         if (typeof info.price === 'string') {
           const match = info.price.match(/\$([\d.]+)/);
           if (match) {
@@ -319,16 +322,18 @@ async function discoverFromHealth(base, timeout) {
             rawPrice = String(Math.round(usdc * 1000000));
           }
         }
-        
+
         // Fallback: jika price adalah angka
         if (!rawPrice && typeof info.price === 'number') {
           rawPrice = String(info.price);
         }
-        
+
         // Tandai endpoint gratis
         if (info.price === 'free' || info.price === '0') {
           rawPrice = '0';
         }
+
+        console.log(`[DEBUG-HEALTH] ${path}: extracted rawPrice="${rawPrice}"`);
 
         candidates.push({
           path,
@@ -341,11 +346,14 @@ async function discoverFromHealth(base, timeout) {
           label: info.description || path,
           description: info.description || '',
         });
+        
+        console.log(`[DEBUG-HEALTH] Candidate for ${path}: rawPrice=${candidates[candidates.length-1].rawPrice}, type=${typeof candidates[candidates.length-1].rawPrice}`);
       }
     }
-    
+
     // Fallback: jika endpoints adalah array (format lain)
     if (Array.isArray(data.endpoints)) {
+      console.log(`[DEBUG-HEALTH] Found array endpoints with ${data.endpoints.length} items`);
       for (const svc of data.endpoints) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
@@ -363,6 +371,11 @@ async function discoverFromHealth(base, timeout) {
       }
     }
 
+    console.log(`[DEBUG-HEALTH] Returning ${candidates.length} candidates`);
+    if (candidates.length > 0) {
+      console.log(`[DEBUG-HEALTH] First candidate rawPrice: ${candidates[0].rawPrice} (${typeof candidates[0].rawPrice})`);
+    }
+    
     return candidates.length > 0 ? candidates : null;
   } catch (err) {
     console.log(`[HEALTH] Error: ${err.message}`);
