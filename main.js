@@ -1,4 +1,5 @@
 import { Actor } from 'apify';
+import { CheerioCrawler, Dataset } from 'crawlee';
 import got from 'got';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
@@ -134,129 +135,105 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
-// ========== DISCOVERY FUNCTIONS ==========
-
-// Agent services discovery (agentsvc.io style) - PRIORITAS PERTAMA
-async function discoverFromAgentServices(base, timeout) {
-  const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
-
-  try {
-    const wellKnownRes = await got(wellKnownUrl, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-    });
-    if (wellKnownRes.statusCode !== 200) return null;
-
-    const info = JSON.parse(wellKnownRes.body);
-    if (!info.catalog_endpoint || !info.execution_endpoint) return null;
-
-    const catalogRes = await got(info.catalog_endpoint, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-    });
-    if (catalogRes.statusCode !== 200) return null;
-
-    const catalog = JSON.parse(catalogRes.body);
-    const services = catalog.services || catalog.data || [];
-    if (!Array.isArray(services)) return null;
-
-    const discovered = [];
-    let execEndpoint = decodeURIComponent(info.execution_endpoint);
-
-    for (const service of services) {
-      const slug = service.slug || service.id || service.name;
-      if (!slug) continue;
-
-      const pathOnly = new URL(execEndpoint.replace('{service}', slug)).pathname;
-
-      let exampleBody = null;
-      try {
-        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, {
-          method: 'GET',
-          timeout: { request: timeout },
-          throwHttpErrors: false,
-          retry: { limit: 0 },
-        });
-        if (detailRes.statusCode === 200) {
-          const detail = JSON.parse(detailRes.body);
-          if (detail.input_schema) {
-            exampleBody = buildExampleBody(detail.input_schema);
-          }
-        }
-      } catch (err) {}
-
-      if (!exampleBody && info['x-quickstart'] && info['x-quickstart'].step2) {
-        const match = info['x-quickstart'].step2.match(/body:\s*({[^}]+})/);
-        if (match) {
-          try { exampleBody = JSON.parse(match[1]); } catch (e) {}
-        }
-      }
-
-      discovered.push({ path: pathOnly, method: 'POST', body: exampleBody || {} });
-    }
-
-    return discovered.length > 0 ? discovered : null;
-  } catch (err) {
-    return null;
-  }
+// ========== KEYWORD FILTER ==========
+function containsX402Keywords(text) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return lower.includes('x402') || lower.includes('agent');
 }
 
-// Standard well-known
-async function discoverPathsFromWellKnown(base, timeout) {
-  const endpoints = [
-    `https://${base}/.well-known/x402`,
-    `https://${base}/.well-known/mpp`,
+// ========== PHASE 1: CRAWLER ==========
+async function crawlDocumentation(domain, timeout) {
+  const startUrls = [
+    `https://${domain}/docs`,
+    `https://${domain}/api`,
+    `https://${domain}/reference`,
+    `https://${domain}/developers`,
   ];
 
-  for (const url of endpoints) {
-    try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      if (response.statusCode !== 200) continue;
+  // Also crawl the root domain for links
+  startUrls.push(`https://${domain}`);
 
-      const body = JSON.parse(response.body);
-      if (body.resources && Array.isArray(body.resources)) {
-        return body.resources.map(r => ({
-          path: r.path,
-          method: 'GET',
-          body: null,
-        }));
+  const discoveredPages = new Set();
+
+  const crawler = new CheerioCrawler({
+    maxRequestsPerCrawl: 50,
+    requestHandlerTimeoutSecs: 30,
+
+    async requestHandler({ request, $, enqueueLinks }) {
+      const bodyText = $('body').text();
+      if (containsX402Keywords(bodyText)) {
+        discoveredPages.add(request.url);
+        console.log(`[CRAWL] Found relevant page: ${request.url}`);
+
+        // Enqueue links that contain keywords
+        await enqueueLinks({
+          transformRequestFunction(req) {
+            const linkText = $(`a[href="${req.url}"]`).text() || '';
+            if (containsX402Keywords(req.url) || containsX402Keywords(linkText)) {
+              return req;
+            }
+            return false; // skip
+          },
+        });
       }
-    } catch (err) {
-      continue;
-    }
-  }
-  return null;
+    },
+  });
+
+  await crawler.run(startUrls);
+  return [...discoveredPages];
 }
 
-function buildExampleBody(schema) {
-  if (!schema || !schema.properties) return {};
-  const body = {};
-  const required = schema.required || [];
-  for (const [key, prop] of Object.entries(schema.properties)) {
-    if (required.includes(key) || Object.keys(body).length === 0) {
-      switch (prop.type) {
-        case 'string': body[key] = prop.example || 'test'; break;
-        case 'number': case 'integer': body[key] = prop.example || 1; break;
-        case 'boolean': body[key] = prop.example !== undefined ? prop.example : true; break;
-        case 'array': body[key] = prop.example || []; break;
-        default: body[key] = null;
+// ========== PHASE 2: SCRAPER ==========
+function extractEndpointCandidates(pageHtml, pageUrl) {
+  const candidates = [];
+
+  // Regex to find API endpoints (paths, URLs)
+  const endpointPatterns = [
+    // Common path patterns like /api/v1/users, /x402/sapi
+    /['"](\/[a-zA-Z0-9_\-\/\.]+)['"]/g,
+    // Markdown links: [text](/path)
+    /\[([^\]]+)\]\((\/[a-zA-Z0-9_\-\/\.]+)\)/g,
+    // HTML href values
+    /href="(\/[a-zA-Z0-9_\-\/\.]+)"/g,
+  ];
+
+  // Extract potential endpoints from text that also contains "x402" or "agent" nearby
+  const textBlocks = pageHtml.split(/<[^>]+>/).filter(Boolean); // crude text extraction
+  for (const block of textBlocks) {
+    if (!containsX402Keywords(block)) continue;
+
+    for (const pattern of endpointPatterns) {
+      let match;
+      while ((match = pattern.exec(block)) !== null) {
+        const path = match[2] || match[1];
+        if (path && path.startsWith('/') && path.length > 1) {
+          candidates.push({
+            path,
+            method: 'GET', // default, will be overridden by scanner
+            body: null,
+            source: pageUrl,
+          });
+        }
       }
     }
   }
-  return body;
+
+  // Deduplicate
+  const unique = [];
+  const seen = new Set();
+  for (const cand of candidates) {
+    const key = `${cand.path}::${cand.method}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      unique.push(cand);
+    }
+  }
+
+  return unique;
 }
 
-// ========== ENDPOINT CHECKER ==========
-
+// ========== PHASE 3: SCANNER (existing, enhanced) ==========
 async function checkEndpoint(base, path, method, body, timeout) {
   const url = `https://${base}${path}`;
   const start = Date.now();
@@ -280,8 +257,6 @@ async function checkEndpoint(base, path, method, body, timeout) {
     const response = await got(url, options);
     const httpStatus = response.statusCode;
     const responseTime = Date.now() - start;
-
-    console.log(`[CHECK] ${method} ${url} → ${httpStatus}`);
 
     if (httpStatus !== 402) {
       console.log(`[DEBUG] Non-402 body (first 200 chars): ${response.body?.slice(0, 200)}`);
@@ -373,8 +348,7 @@ async function checkEndpoint(base, path, method, body, timeout) {
   }
 }
 
-// ========== INPUT ==========
-
+// ========== MAIN ==========
 const input = await Actor.getInput();
 let {
   domain,
@@ -405,15 +379,38 @@ for (const base of targetDomains) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
     scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    // Prioritas: Agent Services → Well-Known → Dictionary
-    let discovered = await discoverFromAgentServices(base, timeout);
-    if (!discovered) discovered = await discoverPathsFromWellKnown(base, timeout);
+    console.log(`[HYBRID] Starting discovery for ${base}`);
 
-    if (discovered && discovered.length > 0) {
-      scanList = discovered;
-      console.log(`Discovered ${scanList.length} paths for ${base}`);
+    // Phase 1: Crawl documentation
+    const docPages = await crawlDocumentation(base, timeout);
+    console.log(`[HYBRID] Crawled ${docPages.length} relevant pages`);
+
+    // Phase 2: Scrape endpoints from pages
+    const candidateEndpoints = [];
+    for (const pageUrl of docPages) {
+      try {
+        const response = await got(pageUrl, {
+          method: 'GET',
+          timeout: { request: timeout },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+        });
+        if (response.statusCode === 200) {
+          const candidates = extractEndpointCandidates(response.body, pageUrl);
+          candidateEndpoints.push(...candidates);
+          console.log(`[SCRAPE] Extracted ${candidates.length} candidates from ${pageUrl}`);
+        }
+      } catch (err) {
+        console.log(`[SCRAPE ERROR] ${pageUrl}: ${err.message}`);
+      }
+    }
+
+    // Phase 3: Scan all candidates + dictionary fallback
+    if (candidateEndpoints.length > 0) {
+      scanList = candidateEndpoints;
+      console.log(`[HYBRID] Total candidates: ${scanList.length}`);
     } else {
-      console.log(`No discovery endpoints found for ${base}. Falling back to dictionary.`);
+      console.log('[HYBRID] No candidates found, falling back to dictionary');
       scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
         path: p,
         method: 'GET',
@@ -423,13 +420,16 @@ for (const base of targetDomains) {
   }
 
   for (const item of scanList) {
+    if (!item.path || item.path === '/') {
+      console.log(`[SKIP] Invalid path: ${JSON.stringify(item)}`);
+      continue;
+    }
     const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
     if (result) results.push(result);
   }
 }
 
 // ========== GENERATE REPORTS ==========
-
 const docxBuffer = await generateDOCX(domain, results);
 const pdfBuffer = await generatePDF(domain, results);
 
