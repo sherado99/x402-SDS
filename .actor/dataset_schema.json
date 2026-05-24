@@ -1,0 +1,153 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+      "domain": {
+        "type": "string",
+        "title": "Domain",
+        "description": "Root domain that was scanned.",
+        "example": "stech-api.sheradogilang.workers.dev"
+      },
+      "path": {
+        "type": "string",
+        "title": "Path",
+        "description": "Full path of the endpoint that was checked.",
+        "example": "/x402/sapi"
+      },
+      "status": {
+        "type": "string",
+        "title": "Status",
+        "description": "Scan status.",
+        "enum": ["success", "error", "not_found"],
+        "example": "success"
+      },
+      "x402Version": {
+        "type": "integer",
+        "title": "X402 Version",
+        "description": "Version of the X402 protocol detected.",
+        "example": 2
+      },
+      "price": {
+        "type": "string",
+        "title": "Price",
+        "description": "Price per call in the smallest unit of the payment token.",
+        "example": "700000"
+      },
+      "network": {
+        "type": "string",
+        "title": "Network",
+        "description": "Blockchain network for payment.",
+        "example": "eip155:8453"
+      },
+      "asset": {
+        "type": "string",
+        "title": "Asset",
+        "description": "Token contract address for payment.",
+        "example": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+      },
+      "payTo": {
+        "type": "string",
+        "title": "Pay To",
+        "description": "Wallet address that receives the payment.",
+        "example": "0x6428761Db59894899b26809503ac83b7790C6fB0"
+      },
+      "label": {
+        "type": "string",
+        "title": "Label",
+        "description": "Product label from the X402 offer.",
+        "example": "Stech – Honest Presence API"
+      },
+      "description": {
+        "type": "string",
+        "title": "Description",
+        "description": "Product description from the X402 offer.",
+        "example": "Ethical AI assistant that provides honest, warm presence."
+      },
+      "httpStatus": {
+        "type": "integer",
+        "title": "HTTP Status",
+        "description": "HTTP status code returned by the endpoint.",
+        "example": 402
+      },
+      "responseTimeMs": {
+        "type": "integer",
+        "title": "Response Time (ms)",
+        "description": "Response time in milliseconds.",
+        "example": 245
+      },
+      "errorMessage": {
+        "type": "string",
+        "title": "Error Message",
+        "description": "Error message if the endpoint check failed.",
+        "example": ""
+      },
+      "timestamp": {
+        "type": "string",
+        "title": "Timestamp",
+        "description": "Scan timestamp in ISO 8601 format.",
+        "example": "2026-05-24T10:30:00.000Z"
+      },
+      "download_docx": {
+        "type": "string",
+        "title": "Download DOCX",
+        "description": "URL to download the full scan report as a Microsoft Word (.docx) file.",
+        "example": "https://api.apify.com/v2/key-value-stores/STORE_ID/records/OUTPUT.docx"
+      },
+      "download_pdf": {
+        "type": "string",
+        "title": "Download PDF",
+        "description": "URL to download the full scan report as a PDF file.",
+        "example": "https://api.apify.com/v2/key-value-stores/STORE_ID/records/OUTPUT.pdf"
+      }
+    },
+    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf"]
+  },
+  "views": {
+    "overview": {
+      "title": "X402 Domain Scan Results",
+      "transformation": {
+        "fields": [
+          "domain",
+          "path",
+          "status",
+          "x402Version",
+          "price",
+          "network",
+          "asset",
+          "payTo",
+          "label",
+          "description",
+          "httpStatus",
+          "responseTimeMs",
+          "errorMessage",
+          "timestamp",
+          "download_docx",
+          "download_pdf"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "domain": { "label": "Domain", "format": "text" },
+          "path": { "label": "Path", "format": "text" },
+          "status": { "label": "Status", "format": "text" },
+          "x402Version": { "label": "X402 Version", "format": "number" },
+          "price": { "label": "Price", "format": "text" },
+          "network": { "label": "Network", "format": "text" },
+          "asset": { "label": "Asset", "format": "text" },
+          "payTo": { "label": "Pay To", "format": "text" },
+          "label": { "label": "Label", "format": "text" },
+          "description": { "label": "Description", "format": "text" },
+          "httpStatus": { "label": "HTTP Status", "format": "number" },
+          "responseTimeMs": { "label": "Response Time (ms)", "format": "number" },
+          "errorMessage": { "label": "Error Message", "format": "text" },
+          "timestamp": { "label": "Timestamp", "format": "text" },
+          "download_docx": { "label": "Download DOCX", "format": "text" },
+          "download_pdf": { "label": "Download PDF", "format": "text" }
+        }
+      }
+    }
+  }
+}
