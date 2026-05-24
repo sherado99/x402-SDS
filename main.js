@@ -157,11 +157,22 @@ async function discoverPathsFromWellKnown(base, timeout) {
       const body = JSON.parse(response.body);
 
       if (body.resources && Array.isArray(body.resources)) {
-        return body.resources.map(r => r.path).filter(p => p);
+        return body.resources.map(r => ({ path: r.path, method: 'GET', body: null }));
       }
 
       if (body.paths && typeof body.paths === 'object') {
-        return Object.keys(body.paths).filter(p => p.includes('x402'));
+        const paths = [];
+        for (const [p, methods] of Object.entries(body.paths)) {
+          if (p.includes('x402')) {
+            const method = methods.post ? 'POST' : 'GET';
+            let exampleBody = null;
+            if (method === 'POST' && methods.post.requestBody?.content?.['application/json']?.example) {
+              exampleBody = methods.post.requestBody.content['application/json'].example;
+            }
+            paths.push({ path: p, method, body: exampleBody });
+          }
+        }
+        return paths;
       }
     } catch (err) {
       continue;
@@ -170,6 +181,7 @@ async function discoverPathsFromWellKnown(base, timeout) {
   return null;
 }
 
+// Agent services discovery (agentsvc.io style) - POST dengan body dari input_schema
 async function discoverFromAgentServices(base, timeout) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
   try {
@@ -184,6 +196,7 @@ async function discoverFromAgentServices(base, timeout) {
     const info = JSON.parse(wellKnownRes.body);
     if (!info.catalog_endpoint || !info.execution_endpoint) return null;
 
+    // Ambil daftar service
     const catalogRes = await got(info.catalog_endpoint, {
       method: 'GET',
       timeout: { request: timeout },
@@ -196,47 +209,108 @@ async function discoverFromAgentServices(base, timeout) {
     const services = catalog.services || catalog.data || [];
     if (!Array.isArray(services)) return null;
 
-    const paths = services.map(s => {
-      const slug = s.slug || s.id || s.name;
-      if (!slug) return null;
-      // Ambil hanya pathname, bukan URL absolut
+    const discovered = [];
+
+    for (const service of services) {
+      const slug = service.slug || service.id || service.name;
+      if (!slug) continue;
+
+      // Dapatkan path eksekusi
       const urlObj = new URL(info.execution_endpoint);
       const pathOnly = urlObj.pathname.replace('{service}', slug);
-      return pathOnly;
-    }).filter(p => p);
 
-    return paths.length > 0 ? paths : null;
+      // Dapatkan input_schema dari detail service
+      let exampleBody = null;
+      try {
+        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, {
+          method: 'GET',
+          timeout: { request: timeout },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+        });
+        if (detailRes.statusCode === 200) {
+          const detail = JSON.parse(detailRes.body);
+          if (detail.input_schema) {
+            exampleBody = buildExampleBody(detail.input_schema);
+          }
+        }
+      } catch (err) {
+        // Abaikan jika detail service tidak bisa diambil
+      }
+
+      // Fallback: gunakan x-quickstart untuk service pertama
+      if (!exampleBody && info['x-quickstart'] && info['x-quickstart'].step2) {
+        const quickstartBody = info['x-quickstart'].step2.match(/body:\s*({[^}]+})/);
+        if (quickstartBody) {
+          try {
+            exampleBody = JSON.parse(quickstartBody[1]);
+          } catch (e) {}
+        }
+      }
+
+      discovered.push({
+        path: pathOnly,
+        method: 'POST',
+        body: exampleBody || {} // minimal empty object
+      });
+    }
+
+    return discovered.length > 0 ? discovered : null;
   } catch (err) {
     return null;
   }
 }
 
+// Helper: bangun body contoh dari JSON Schema sederhana
+function buildExampleBody(schema) {
+  if (!schema || !schema.properties) return {};
+  const body = {};
+  const required = schema.required || [];
+  for (const [key, prop] of Object.entries(schema.properties)) {
+    if (required.includes(key) || Object.keys(body).length === 0) {
+      switch (prop.type) {
+        case 'string': body[key] = prop.example || 'test'; break;
+        case 'number': case 'integer': body[key] = prop.example || 1; break;
+        case 'boolean': body[key] = prop.example !== undefined ? prop.example : true; break;
+        case 'array': body[key] = prop.example || []; break;
+        default: body[key] = null;
+      }
+    }
+  }
+  return body;
+}
+
 // ========== ENDPOINT CHECKER ==========
 
-async function checkEndpoint(base, path, timeout) {
+async function checkEndpoint(base, path, method, body, timeout) {
   const url = `https://${base}${path}`;
   const start = Date.now();
+  const options = {
+    method,
+    timeout: { request: timeout },
+    throwHttpErrors: false,
+    retry: { limit: 0 },
+  };
+  if (method === 'POST' && body) {
+    options.json = body;
+  }
+
   try {
-    const response = await got(url, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-    });
+    const response = await got(url, options);
     const httpStatus = response.statusCode;
     const responseTime = Date.now() - start;
 
-    if (httpStatus !== 402) return null; // Hanya tangkap 402
+    if (httpStatus !== 402) return null;
 
     try {
-      const body = JSON.parse(response.body);
-      if (body.accepts && Array.isArray(body.accepts) && body.accepts.length > 0) {
-        const offer = body.accepts[0];
+      const responseBody = JSON.parse(response.body);
+      if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
+        const offer = responseBody.accepts[0];
         return {
           domain: base,
           path,
           status: 'success',
-          x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
+          x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: offer.amount || '',
           network: offer.network || '',
           asset: offer.asset || '',
@@ -253,7 +327,7 @@ async function checkEndpoint(base, path, timeout) {
           domain: base,
           path,
           status: 'error',
-          x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
+          x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: '',
           network: '',
           asset: '',
@@ -333,28 +407,27 @@ if (includeSubdomains) {
 const results = [];
 
 for (const base of targetDomains) {
-  let pathsToCheck = [];
+  let scanList = []; // Array of { path, method, body }
 
   if (manualPaths && manualPaths.trim()) {
-    pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
+    const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
+    scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    // Discovery otomatis: gabungkan well-known/openapi + agent-services
-    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout);
-    const fromAgent = await discoverFromAgentServices(base, timeout);
-    const discovered = [...(fromWellKnown || []), ...(fromAgent || [])];
+    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout) || [];
+    const fromAgent = await discoverFromAgentServices(base, timeout) || [];
+    const combined = [...fromWellKnown, ...fromAgent];
 
-    if (discovered.length > 0) {
-      // Hapus duplikat
-      pathsToCheck = [...new Set(discovered)];
-      console.log(`Discovered ${pathsToCheck.length} paths for ${base}`);
+    if (combined.length > 0) {
+      scanList = combined;
+      console.log(`Discovered ${scanList.length} endpoints for ${base}`);
     } else {
       console.log(`No discovery endpoints found for ${base}. Falling back to dictionary.`);
-      pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
+      scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
     }
   }
 
-  for (const path of pathsToCheck) {
-    const result = await checkEndpoint(base, path, timeout);
+  for (const item of scanList) {
+    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
     if (result) results.push(result);
   }
 }
