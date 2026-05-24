@@ -27,19 +27,25 @@
         "type": "string",
         "title": "X402 Version",
         "description": "Version of the X402 protocol detected.",
-        "example": "2"
+        "example": "1"
       },
       "price": {
         "type": "string",
-        "title": "Price",
-        "description": "Price per call in the smallest unit of the payment token.",
-        "example": "700000"
+        "title": "Price (atomic units)",
+        "description": "Raw price in atomic units of the payment token.",
+        "example": "1000"
+      },
+      "priceReadable": {
+        "type": "string",
+        "title": "Price (USDC)",
+        "description": "Price per call in USDC (e.g., $0.001000).",
+        "example": "$0.001000"
       },
       "network": {
         "type": "string",
         "title": "Network",
         "description": "Blockchain network for payment.",
-        "example": "eip155:8453"
+        "example": "base"
       },
       "asset": {
         "type": "string",
@@ -51,7 +57,7 @@
         "type": "string",
         "title": "Pay To",
         "description": "Wallet address that receives the payment.",
-        "example": "0x6428761Db59894899b26809503ac83b7790C6fB0"
+        "example": "0xC33336EB299d97aa76E61337906A677552878818"
       },
       "label": {
         "type": "string",
@@ -75,7 +81,7 @@
         "type": "string",
         "title": "Response Time (ms)",
         "description": "Response time in milliseconds.",
-        "example": "245"
+        "example": "118"
       },
       "errorMessage": {
         "type": "string",
@@ -87,7 +93,7 @@
         "type": "string",
         "title": "Timestamp",
         "description": "Scan timestamp in ISO 8601 format.",
-        "example": "2026-05-24T10:30:00.000Z"
+        "example": "2026-05-24T11:36:03.293Z"
       },
       "download_docx": {
         "type": "string",
@@ -102,7 +108,7 @@
         "example": "https://api.apify.com/v2/key-value-stores/STORE_ID/records/OUTPUT.pdf"
       }
     },
-    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf"]
+    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable"]
   },
   "views": {
     "overview": {
@@ -114,6 +120,7 @@
           "status",
           "x402Version",
           "price",
+          "priceReadable",
           "network",
           "asset",
           "payTo",
@@ -134,7 +141,8 @@
           "path": { "label": "Path", "format": "text" },
           "status": { "label": "Status", "format": "text" },
           "x402Version": { "label": "X402 Version", "format": "text" },
-          "price": { "label": "Price", "format": "text" },
+          "price": { "label": "Price (raw)", "format": "text" },
+          "priceReadable": { "label": "Price (USDC)", "format": "text" },
           "network": { "label": "Network", "format": "text" },
           "asset": { "label": "Asset", "format": "text" },
           "payTo": { "label": "Pay To", "format": "text" },
