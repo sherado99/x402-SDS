@@ -129,9 +129,9 @@ if (manualPaths && manualPaths.trim()) {
   pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
 }
 
-const targetDomains = [normalizeDomain(domain)];
-if (includeSubdomains) {
-  targetDomains.push(`api.${normalizeDomain(domain)}`);
+if (!domain) {
+  await Actor.fail('Domain is required. Please provide a root domain to scan.');
+  await Actor.exit();
 }
 
 // ========== SCAN ==========
