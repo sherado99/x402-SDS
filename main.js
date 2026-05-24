@@ -108,7 +108,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== INPUT ==========
 
-const input = await Actor.getInput();
+// ... setelah const input = await Actor.getInput();
 const {
   domain,
   paths: manualPaths,
@@ -118,9 +118,10 @@ const {
 } = input;
 
 if (!domain) {
-  throw new Error('Domain is required. Please provide a root domain to scan.');
+  await Actor.fail('Domain is required. Please provide a root domain to scan.');
+  await Actor.exit();
+  return; // tidak perlu, tapi aman
 }
-
 // Determine paths to scan
 let pathsToCheck = [];
 if (manualPaths && manualPaths.trim()) {
