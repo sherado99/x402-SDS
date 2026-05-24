@@ -108,7 +108,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== INPUT ==========
 
-// ... setelah const input = await Actor.getInput();
+const input = await Actor.getInput();
 const {
   domain,
   paths: manualPaths,
@@ -120,7 +120,8 @@ const {
 if (!domain) {
   await Actor.fail('Domain is required. Please provide a root domain to scan.');
   await Actor.exit();
-  }
+}
+
 // Determine paths to scan
 let pathsToCheck = [];
 if (manualPaths && manualPaths.trim()) {
@@ -129,9 +130,9 @@ if (manualPaths && manualPaths.trim()) {
   pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
 }
 
-if (!domain) {
-  await Actor.fail('Domain is required. Please provide a root domain to scan.');
-  await Actor.exit();
+const targetDomains = [normalizeDomain(domain)];
+if (includeSubdomains) {
+  targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
 // ========== SCAN ==========
@@ -143,7 +144,6 @@ for (const base of targetDomains) {
     const url = `https://${base}${path}`;
     const start = Date.now();
     let httpStatus = null;
-    let errorMessage = '';
     let x402Data = {};
 
     try {
@@ -163,7 +163,7 @@ for (const base of targetDomains) {
             const offer = body.accepts[0];
             x402Data = {
               status: 'success',
-              x402Version: body.x402Version || null,
+              x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
               price: offer.amount || '',
               network: offer.network || '',
               asset: offer.asset || '',
@@ -174,7 +174,7 @@ for (const base of targetDomains) {
           } else {
             x402Data = {
               status: 'error',
-              x402Version: body.x402Version || null,
+              x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
               errorMessage: 'Missing accepts array in 402 response',
             };
           }
@@ -191,15 +191,15 @@ for (const base of targetDomains) {
       results.push({
         domain: base,
         path,
-        x402Version: x402Data.x402Version ?? null,
+        x402Version: x402Data.x402Version ?? '',
         price: x402Data.price ?? '',
         network: x402Data.network ?? '',
         asset: x402Data.asset ?? '',
         payTo: x402Data.payTo ?? '',
         label: x402Data.label ?? '',
         description: x402Data.description ?? '',
-        httpStatus,
-        responseTimeMs: responseTime,
+        httpStatus: httpStatus !== null ? String(httpStatus) : '',
+        responseTimeMs: responseTime !== undefined ? String(responseTime) : '',
         errorMessage: x402Data.errorMessage ?? '',
         status: x402Data.status,
         timestamp: new Date().toISOString(),
@@ -209,15 +209,15 @@ for (const base of targetDomains) {
         domain: base,
         path,
         status: 'error',
-        x402Version: null,
+        x402Version: '',
         price: '',
         network: '',
         asset: '',
         payTo: '',
         label: '',
         description: '',
-        httpStatus: 0,
-        responseTimeMs: Date.now() - start,
+        httpStatus: '0',
+        responseTimeMs: String(Date.now() - start),
         errorMessage: err.message,
         timestamp: new Date().toISOString(),
       });
