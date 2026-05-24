@@ -72,7 +72,7 @@ async function generateDOCX(domain, results) {
         spacing: { before: 160, after: 60 },
       }));
       if (row.status === 'success') {
-        children.push(new Paragraph({ text: `Price: ${row.price} | Network: ${row.network}`, spacing: { after: 40 } }));
+        children.push(new Paragraph({ text: `Price: ${row.priceReadable} | Network: ${row.network}`, spacing: { after: 40 } }));
         children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
         children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
         children.push(new Paragraph({ text: `Pay To: ${row.payTo}`, spacing: { after: 40 } }));
@@ -110,7 +110,7 @@ async function generatePDF(domain, results) {
       for (const row of results) {
         doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
         if (row.status === 'success') {
-          doc.fontSize(10).text(`Price: ${row.price} | Network: ${row.network}`);
+          doc.fontSize(10).text(`Price: ${row.priceReadable} | Network: ${row.network}`);
           doc.fontSize(10).text(`Label: ${row.label}`);
           doc.fontSize(10).text(`Asset: ${row.asset}`);
           doc.fontSize(10).text(`Pay To: ${row.payTo}`);
@@ -136,7 +136,6 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DISCOVERY FUNCTIONS ==========
 
-// Standard well-known / openapi
 async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
   const endpoints = [
     `https://${base}/.well-known/x402`,
@@ -152,7 +151,8 @@ async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
   };
 
   if (proxyUrl) {
-    options.agent = { https: new (require('https-proxy-agent'))(proxyUrl) };
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
   }
 
   for (const url of endpoints) {
@@ -187,7 +187,6 @@ async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
   return null;
 }
 
-// Agent services discovery (agentsvc.io style) - POST dengan body dari input_schema
 async function discoverFromAgentServices(base, timeout, proxyUrl) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
 
@@ -212,15 +211,12 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
     if (!Array.isArray(services)) return null;
 
     const discovered = [];
-
-    // Decode execution endpoint untuk memastikan {service} tidak ter-encode
     let execEndpoint = decodeURIComponent(info.execution_endpoint);
 
     for (const service of services) {
       const slug = service.slug || service.id || service.name;
       if (!slug) continue;
 
-      // Ganti placeholder dengan slug asli
       const pathOnly = new URL(execEndpoint.replace('{service}', slug)).pathname;
 
       let exampleBody = null;
@@ -254,7 +250,6 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
   }
 }
 
-// Helper: bangun body contoh dari JSON Schema sederhana
 function buildExampleBody(schema) {
   if (!schema || !schema.properties) return {};
   const body = {};
@@ -273,7 +268,7 @@ function buildExampleBody(schema) {
   return body;
 }
 
-// ========== ENDPOINT CHECKER (DIPERBARUI) ==========
+// ========== ENDPOINT CHECKER ==========
 
 async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
   const url = `https://${base}${path}`;
@@ -317,16 +312,16 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
       if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
         const offer = responseBody.accepts[0];
         
-        // === PERBAIKAN: baca kedua variasi field harga ===
         const rawAmount = offer.maxAmountRequired || offer.amount || '';
-        const priceUSDC = rawAmount ? (parseInt(rawAmount, 10) / 1000000).toFixed(6) : '';
+        const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
 
         return {
           domain: base,
           path,
           status: 'success',
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-          price: rawAmount,                          // Nilai atomik mentah (misal "1000")
+          price: rawAmount,
+          priceReadable: priceReadable,
           network: offer.network || '',
           asset: offer.asset || '',
           payTo: offer.payTo || '',
@@ -344,6 +339,7 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
           status: 'error',
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: '',
+          priceReadable: '',
           network: '',
           asset: '',
           payTo: '',
@@ -362,6 +358,7 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
         status: 'error',
         x402Version: '',
         price: '',
+        priceReadable: '',
         network: '',
         asset: '',
         payTo: '',
@@ -381,6 +378,7 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
       status: 'error',
       x402Version: '',
       price: '',
+      priceReadable: '',
       network: '',
       asset: '',
       payTo: '',
@@ -403,7 +401,7 @@ let {
   maxPaths = 100,
   timeout = 5000,
   includeSubdomains = false,
-  useResidentialProxy = false, // <--- BARU
+  useResidentialProxy = false,
 } = input;
 
 if (!domain) {
@@ -411,7 +409,6 @@ if (!domain) {
   await Actor.exit();
 }
 
-// Bersihkan domain
 domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
 const targetDomains = [normalizeDomain(domain)];
@@ -419,7 +416,6 @@ if (includeSubdomains) {
   targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
-// ========== PROXY SETUP ==========
 let proxyUrl = null;
 if (useResidentialProxy) {
   const proxyConfig = await Actor.createProxyConfiguration({
@@ -428,8 +424,6 @@ if (useResidentialProxy) {
   proxyUrl = await proxyConfig.newUrl();
   console.log(`[PROXY] Using residential proxy: ${proxyUrl}`);
 }
-
-// ========== SCAN ==========
 
 const results = [];
 
