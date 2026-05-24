@@ -136,49 +136,71 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DISCOVERY FUNCTIONS ==========
 
-async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
+// Coba ambil daftar endpoint dari file OpenAPI/Swagger publik
+async function discoverFromOpenApi(base, timeout) {
+  const candidates = [
+    `https://${base}/openapi.json`,
+    `https://${base}/swagger.json`,
+    `https://${base}/api/openapi.json`,
+    `https://${base}/swagger/v1/swagger.json`,
+  ];
+
+  for (const url of candidates) {
+    try {
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode !== 200) continue;
+
+      const spec = JSON.parse(response.body);
+      const paths = spec.paths || spec.routes || {};
+      const discovered = [];
+
+      for (const [route, methods] of Object.entries(paths)) {
+        const method = methods.post ? 'POST' : 'GET';
+        let exampleBody = null;
+        const operation = methods.post || methods.get;
+        if (operation?.requestBody?.content?.['application/json']?.example) {
+          exampleBody = operation.requestBody.content['application/json'].example;
+        }
+        discovered.push({ path: route, method, body: exampleBody });
+      }
+
+      if (discovered.length > 0) {
+        console.log(`[OPENAPI] Discovered ${discovered.length} paths from ${url}`);
+        return discovered;
+      }
+    } catch (err) {
+      // Lanjut ke file berikutnya
+      continue;
+    }
+  }
+  return null;
+}
+
+// Standard well-known / openapi
+async function discoverPathsFromWellKnown(base, timeout) {
   const endpoints = [
     `https://${base}/.well-known/x402`,
     `https://${base}/.well-known/mpp`,
-    `https://${base}/openapi.json`,
   ];
-
-  const options = {
-    method: 'GET',
-    timeout: { request: timeout },
-    throwHttpErrors: false,
-    retry: { limit: 0 },
-  };
-
-  if (proxyUrl) {
-    const { HttpsProxyAgent } = await import('https-proxy-agent');
-    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
-  }
 
   for (const url of endpoints) {
     try {
-      const response = await got(url, options);
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
       if (response.statusCode !== 200) continue;
 
       const body = JSON.parse(response.body);
-
       if (body.resources && Array.isArray(body.resources)) {
         return body.resources.map(r => ({ path: r.path, method: 'GET', body: null }));
-      }
-
-      if (body.paths && typeof body.paths === 'object') {
-        const paths = [];
-        for (const [p, methods] of Object.entries(body.paths)) {
-          if (p.includes('x402')) {
-            const method = methods.post ? 'POST' : 'GET';
-            let exampleBody = null;
-            if (method === 'POST' && methods.post.requestBody?.content?.['application/json']?.example) {
-              exampleBody = methods.post.requestBody.content['application/json'].example;
-            }
-            paths.push({ path: p, method, body: exampleBody });
-          }
-        }
-        return paths;
       }
     } catch (err) {
       continue;
@@ -187,23 +209,28 @@ async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
   return null;
 }
 
-async function discoverFromAgentServices(base, timeout, proxyUrl) {
+// Agent services discovery (agentsvc.io style)
+async function discoverFromAgentServices(base, timeout) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
 
-  const options = { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } };
-  if (proxyUrl) {
-    const { HttpsProxyAgent } = await import('https-proxy-agent');
-    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
-  }
-
   try {
-    const wellKnownRes = await got(wellKnownUrl, options);
+    const wellKnownRes = await got(wellKnownUrl, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
     if (wellKnownRes.statusCode !== 200) return null;
 
     const info = JSON.parse(wellKnownRes.body);
     if (!info.catalog_endpoint || !info.execution_endpoint) return null;
 
-    const catalogRes = await got(info.catalog_endpoint, options);
+    const catalogRes = await got(info.catalog_endpoint, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
     if (catalogRes.statusCode !== 200) return null;
 
     const catalog = JSON.parse(catalogRes.body);
@@ -221,7 +248,12 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
 
       let exampleBody = null;
       try {
-        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, options);
+        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, {
+          method: 'GET',
+          timeout: { request: timeout },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+        });
         if (detailRes.statusCode === 200) {
           const detail = JSON.parse(detailRes.body);
           if (detail.input_schema) {
@@ -237,11 +269,7 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
         }
       }
 
-      discovered.push({
-        path: pathOnly,
-        method: 'POST',
-        body: exampleBody || {}
-      });
+      discovered.push({ path: pathOnly, method: 'POST', body: exampleBody || {} });
     }
 
     return discovered.length > 0 ? discovered : null;
@@ -270,7 +298,7 @@ function buildExampleBody(schema) {
 
 // ========== ENDPOINT CHECKER ==========
 
-async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
+async function checkEndpoint(base, path, method, body, timeout) {
   const url = `https://${base}${path}`;
   const start = Date.now();
   
@@ -287,12 +315,6 @@ async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
 
   if (method === 'POST' && body) {
     options.json = body;
-  }
-
-  if (proxyUrl) {
-    console.log(`[PROXY] Using residential proxy for ${url}`);
-    const { HttpsProxyAgent } = await import('https-proxy-agent');
-    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
   }
 
   try {
@@ -401,7 +423,6 @@ let {
   maxPaths = 100,
   timeout = 5000,
   includeSubdomains = false,
-  useResidentialProxy = false,
 } = input;
 
 if (!domain) {
@@ -416,15 +437,6 @@ if (includeSubdomains) {
   targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
-let proxyUrl = null;
-if (useResidentialProxy) {
-  const proxyConfig = await Actor.createProxyConfiguration({
-    groups: ['RESIDENTIAL'],
-  });
-  proxyUrl = await proxyConfig.newUrl();
-  console.log(`[PROXY] Using residential proxy: ${proxyUrl}`);
-}
-
 const results = [];
 
 for (const base of targetDomains) {
@@ -434,13 +446,14 @@ for (const base of targetDomains) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
     scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout, proxyUrl) || [];
-    const fromAgent = await discoverFromAgentServices(base, timeout, proxyUrl) || [];
-    const combined = [...fromWellKnown, ...fromAgent];
+    // Prioritaskan OpenAPI, lalu well-known, lalu agent-services, terakhir dictionary
+    let discovered = await discoverFromOpenApi(base, timeout);
+    if (!discovered) discovered = await discoverPathsFromWellKnown(base, timeout);
+    if (!discovered) discovered = await discoverFromAgentServices(base, timeout);
 
-    if (combined.length > 0) {
-      scanList = combined;
-      console.log(`Discovered ${scanList.length} endpoints for ${base}`);
+    if (discovered && discovered.length > 0) {
+      scanList = discovered;
+      console.log(`Discovered ${scanList.length} paths for ${base}`);
     } else {
       console.log(`No discovery endpoints found for ${base}. Falling back to dictionary.`);
       scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
@@ -448,7 +461,7 @@ for (const base of targetDomains) {
   }
 
   for (const item of scanList) {
-    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout, proxyUrl);
+    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
     if (result) results.push(result);
   }
 }
