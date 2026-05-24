@@ -79,9 +79,6 @@ async function generateDOCX(domain, results) {
         children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
       } else if (row.errorMessage) {
         children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
-        if (row.priceReadable) {
-          children.push(new Paragraph({ text: `Scraped Price: ${row.priceReadable}`, spacing: { after: 40 } }));
-        }
       }
       children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
     }
@@ -120,9 +117,6 @@ async function generatePDF(domain, results) {
           doc.fontSize(10).text(`Description: ${row.description}`);
         } else if (row.errorMessage) {
           doc.fontSize(10).text(`Error: ${row.errorMessage}`);
-          if (row.priceReadable) {
-            doc.fontSize(10).text(`Scraped Price: ${row.priceReadable}`);
-          }
         }
         doc.fontSize(9).text(`HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`);
         doc.moveDown(0.5);
@@ -142,87 +136,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DISCOVERY FUNCTIONS ==========
 
-async function discoverFromOpenApi(base, timeout) {
-  const candidates = [
-    `https://${base}/openapi.json`,
-    `https://${base}/swagger.json`,
-    `https://${base}/api/openapi.json`,
-    `https://${base}/swagger/v1/swagger.json`,
-  ];
-
-  for (const url of candidates) {
-    try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      if (response.statusCode !== 200) continue;
-
-      const spec = JSON.parse(response.body);
-      const paths = spec.paths || spec.routes || {};
-      const discovered = [];
-      const externalDocsUrl = spec.externalDocs?.url || spec.info?.contact?.url || '';
-
-      for (const [route, methods] of Object.entries(paths)) {
-        const method = methods.post ? 'POST' : 'GET';
-        let exampleBody = null;
-        const operation = methods.post || methods.get;
-        if (operation?.requestBody?.content?.['application/json']?.example) {
-          exampleBody = operation.requestBody.content['application/json'].example;
-        }
-        discovered.push({
-          path: route,
-          method,
-          body: exampleBody,
-          docsUrl: externalDocsUrl || `https://${base}/docs`,
-        });
-      }
-
-      if (discovered.length > 0) {
-        console.log(`[OPENAPI] Discovered ${discovered.length} paths from ${url}`);
-        return discovered;
-      }
-    } catch (err) {
-      continue;
-    }
-  }
-  return null;
-}
-
-async function discoverPathsFromWellKnown(base, timeout) {
-  const endpoints = [
-    `https://${base}/.well-known/x402`,
-    `https://${base}/.well-known/mpp`,
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      if (response.statusCode !== 200) continue;
-
-      const body = JSON.parse(response.body);
-      if (body.resources && Array.isArray(body.resources)) {
-        return body.resources.map(r => ({
-          path: r.path,
-          method: 'GET',
-          body: null,
-          docsUrl: '',
-        }));
-      }
-    } catch (err) {
-      continue;
-    }
-  }
-  return null;
-}
-
+// Agent services discovery (agentsvc.io style) - PRIORITAS PERTAMA
 async function discoverFromAgentServices(base, timeout) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
 
@@ -282,18 +196,45 @@ async function discoverFromAgentServices(base, timeout) {
         }
       }
 
-      discovered.push({
-        path: pathOnly,
-        method: 'POST',
-        body: exampleBody || {},
-        docsUrl: info.docs || '',
-      });
+      discovered.push({ path: pathOnly, method: 'POST', body: exampleBody || {} });
     }
 
     return discovered.length > 0 ? discovered : null;
   } catch (err) {
     return null;
   }
+}
+
+// Standard well-known
+async function discoverPathsFromWellKnown(base, timeout) {
+  const endpoints = [
+    `https://${base}/.well-known/x402`,
+    `https://${base}/.well-known/mpp`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode !== 200) continue;
+
+      const body = JSON.parse(response.body);
+      if (body.resources && Array.isArray(body.resources)) {
+        return body.resources.map(r => ({
+          path: r.path,
+          method: 'GET',
+          body: null,
+        }));
+      }
+    } catch (err) {
+      continue;
+    }
+  }
+  return null;
 }
 
 function buildExampleBody(schema) {
@@ -314,55 +255,9 @@ function buildExampleBody(schema) {
   return body;
 }
 
-// ========== DOCUMENTATION SCRAPER ==========
-
-async function scrapeDocumentationForPrice(docsUrl, path, timeout) {
-  if (!docsUrl) return '';
-  console.log(`[SCRAPE] Trying to scrape price from ${docsUrl} for ${path}`);
-
-  try {
-    const response = await got(docsUrl, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    });
-
-    if (response.statusCode !== 200) return '';
-
-    const html = response.body;
-    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
-
-    // Cari pola harga: $0.01, $0.005, 1 credit, 1 USDC, Price: 0.01, dll.
-    const pricePatterns = [
-      /\$\s*(\d+\.?\d*)\s*(USDC|USD)?/gi,
-      /(\d+\.?\d*)\s*(USDC|USD|credit)/gi,
-      /Price:\s*\$?(\d+\.?\d*)/gi,
-      /Cost:\s*\$?(\d+\.?\d*)/gi,
-    ];
-
-    for (const pattern of pricePatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        const price = match[0].replace(/\s+/g, ' ').trim();
-        return price;
-      }
-    }
-
-    return '';
-  } catch (err) {
-    console.log(`[SCRAPE] Failed to scrape ${docsUrl}: ${err.message}`);
-    return '';
-  }
-}
-
 // ========== ENDPOINT CHECKER ==========
 
-async function checkEndpoint(base, path, method, body, timeout, docsUrl = '') {
+async function checkEndpoint(base, path, method, body, timeout) {
   const url = `https://${base}${path}`;
   const start = Date.now();
   
@@ -419,15 +314,13 @@ async function checkEndpoint(base, path, method, body, timeout, docsUrl = '') {
           timestamp: new Date().toISOString(),
         };
       } else {
-        // 402 tapi tanpa accepts array — coba scrape dokumentasi
-        const scrapedPrice = await scrapeDocumentationForPrice(docsUrl, path, timeout);
         return {
           domain: base,
           path,
           status: 'error',
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: '',
-          priceReadable: scrapedPrice,
+          priceReadable: '',
           network: '',
           asset: '',
           payTo: '',
@@ -440,15 +333,13 @@ async function checkEndpoint(base, path, method, body, timeout, docsUrl = '') {
         };
       }
     } catch (parseErr) {
-      // Invalid JSON — coba scrape dokumentasi
-      const scrapedPrice = await scrapeDocumentationForPrice(docsUrl, path, timeout);
       return {
         domain: base,
         path,
         status: 'error',
         x402Version: '',
         price: '',
-        priceReadable: scrapedPrice,
+        priceReadable: '',
         network: '',
         asset: '',
         payTo: '',
@@ -512,11 +403,11 @@ for (const base of targetDomains) {
 
   if (manualPaths && manualPaths.trim()) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
-    scanList = paths.map(p => ({ path: p, method: 'GET', body: null, docsUrl: '' }));
+    scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    let discovered = await discoverFromOpenApi(base, timeout);
+    // Prioritas: Agent Services → Well-Known → Dictionary
+    let discovered = await discoverFromAgentServices(base, timeout);
     if (!discovered) discovered = await discoverPathsFromWellKnown(base, timeout);
-    if (!discovered) discovered = await discoverFromAgentServices(base, timeout);
 
     if (discovered && discovered.length > 0) {
       scanList = discovered;
@@ -527,13 +418,12 @@ for (const base of targetDomains) {
         path: p,
         method: 'GET',
         body: null,
-        docsUrl: '',
       }));
     }
   }
 
   for (const item of scanList) {
-    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout, item.docsUrl || '');
+    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
     if (result) results.push(result);
   }
 }
