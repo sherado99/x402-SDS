@@ -24,10 +24,10 @@
         "example": "success"
       },
       "x402Version": {
-        "type": "integer",
+        "type": "string",
         "title": "X402 Version",
         "description": "Version of the X402 protocol detected.",
-        "example": 2
+        "example": "2"
       },
       "price": {
         "type": "string",
@@ -66,16 +66,16 @@
         "example": "Ethical AI assistant that provides honest, warm presence."
       },
       "httpStatus": {
-        "type": "integer",
+        "type": "string",
         "title": "HTTP Status",
         "description": "HTTP status code returned by the endpoint.",
-        "example": 402
+        "example": "402"
       },
       "responseTimeMs": {
-        "type": "integer",
+        "type": "string",
         "title": "Response Time (ms)",
         "description": "Response time in milliseconds.",
-        "example": 245
+        "example": "245"
       },
       "errorMessage": {
         "type": "string",
@@ -133,15 +133,15 @@
           "domain": { "label": "Domain", "format": "text" },
           "path": { "label": "Path", "format": "text" },
           "status": { "label": "Status", "format": "text" },
-          "x402Version": { "label": "X402 Version", "format": "number" },
+          "x402Version": { "label": "X402 Version", "format": "text" },
           "price": { "label": "Price", "format": "text" },
           "network": { "label": "Network", "format": "text" },
           "asset": { "label": "Asset", "format": "text" },
           "payTo": { "label": "Pay To", "format": "text" },
           "label": { "label": "Label", "format": "text" },
           "description": { "label": "Description", "format": "text" },
-          "httpStatus": { "label": "HTTP Status", "format": "number" },
-          "responseTimeMs": { "label": "Response Time (ms)", "format": "number" },
+          "httpStatus": { "label": "HTTP Status", "format": "text" },
+          "responseTimeMs": { "label": "Response Time (ms)", "format": "text" },
           "errorMessage": { "label": "Error Message", "format": "text" },
           "timestamp": { "label": "Timestamp", "format": "text" },
           "download_docx": { "label": "Download DOCX", "format": "text" },
