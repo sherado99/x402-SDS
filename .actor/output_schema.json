@@ -21,7 +21,7 @@
       "template": "{{status}}"
     },
     "x402Version": {
-      "type": "integer",
+      "type": "string",
       "description": "Version of the X402 protocol detected.",
       "title": "X402 Version",
       "template": "{{x402Version}}"
@@ -63,13 +63,13 @@
       "template": "{{description}}"
     },
     "httpStatus": {
-      "type": "integer",
+      "type": "string",
       "description": "HTTP status code returned by the endpoint.",
       "title": "HTTP Status",
       "template": "{{httpStatus}}"
     },
     "responseTimeMs": {
-      "type": "integer",
+      "type": "string",
       "description": "Response time in milliseconds.",
       "title": "Response Time (ms)",
       "template": "{{responseTimeMs}}"
