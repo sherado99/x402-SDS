@@ -35,7 +35,7 @@ const BUILT_IN_DICTIONARY = [
   '/v1/x402',
   '/v1/x402/payment',
   '/v2/x402',
-  '/.well-known/x402',
+  '/.well-known/x402.json',
 ];
 
 function normalizeDomain(d) {
