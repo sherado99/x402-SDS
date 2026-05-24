@@ -71,7 +71,7 @@ async function generateDOCX(domain, results) {
         heading: HeadingLevel.HEADING_2,
         spacing: { before: 160, after: 60 },
       }));
-      if (row.status === 'success') {
+      if (row.status === 'success' || row.status === 'public_info') {
         children.push(new Paragraph({ text: `Price: ${row.priceReadable} | Network: ${row.network}`, spacing: { after: 40 } }));
         children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
         children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
@@ -109,7 +109,7 @@ async function generatePDF(domain, results) {
     } else {
       for (const row of results) {
         doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
-        if (row.status === 'success') {
+        if (row.status === 'success' || row.status === 'public_info') {
           doc.fontSize(10).text(`Price: ${row.priceReadable} | Network: ${row.network}`);
           doc.fontSize(10).text(`Label: ${row.label}`);
           doc.fontSize(10).text(`Asset: ${row.asset}`);
@@ -155,7 +155,6 @@ async function discoverFromWellKnownAgent(base, timeout) {
       const data = JSON.parse(response.body);
       const candidates = [];
 
-      // Extract endpoints from skills, services, or endpoints
       const services = data.skills || data.services || data.endpoints || [];
       for (const svc of services) {
         const path = svc.endpoint || svc.path || svc.url;
@@ -165,7 +164,7 @@ async function discoverFromWellKnownAgent(base, timeout) {
           method: svc.method || 'GET',
           body: null,
           source: wkPath,
-          rawPrice: svc.price || svc.cost || '',
+          rawPrice: String(svc.price || svc.cost || ''),
           network: svc.network || '',
           asset: svc.asset || '',
           label: svc.name || svc.id || '',
@@ -202,7 +201,7 @@ async function discoverFromWellKnownX402(base, timeout) {
         method: 'GET',
         body: null,
         source: '/.well-known/x402',
-        rawPrice: res.price || '',
+        rawPrice: String(res.price || ''),
         network: res.network || '',
         asset: res.asset || '',
         label: res.name || res.id || '',
@@ -245,7 +244,7 @@ async function discoverFromOpenAPI(base, timeout) {
 
         if (operation['x-payment-info']) {
           const pi = operation['x-payment-info'];
-          price = pi.price || pi.amount || '';
+          price = String(pi.price || pi.amount || '');
           network = pi.network || '';
           asset = pi.asset || pi.token || '';
           description = pi.description || '';
@@ -254,7 +253,7 @@ async function discoverFromOpenAPI(base, timeout) {
         const resp402 = operation.responses?.['402'];
         if (resp402?.content?.['application/json']?.example?.accepts) {
           const offer = resp402.content['application/json'].example.accepts[0] || {};
-          price = price || offer.maxAmountRequired || offer.amount || '';
+          price = price || String(offer.maxAmountRequired || offer.amount || '');
           network = network || offer.network || '';
           asset = asset || offer.asset || '';
           description = description || offer.description || operation.description || '';
@@ -262,9 +261,9 @@ async function discoverFromOpenAPI(base, timeout) {
 
         if (!price && spec['x-payment-info']) {
           const pi = spec['x-payment-info'];
-          price = pi.price || '';
-          network = pi.network || '';
-          asset = pi.asset || '';
+          price = String(pi.price || '');
+          network = network || pi.network || '';
+          asset = asset || pi.asset || '';
         }
 
         candidates.push({
@@ -309,7 +308,7 @@ async function discoverFromHealth(base, timeout) {
         method: svc.method || 'GET',
         body: null,
         source: '/health',
-        rawPrice: svc.price || svc.x402Price || '',
+        rawPrice: String(svc.price || svc.x402Price || ''),
         network: svc.network || '',
         asset: svc.asset || '',
         label: svc.name || svc.id || '',
@@ -345,13 +344,13 @@ async function checkEndpoint(base, candidate, timeout) {
     const httpStatus = response.statusCode;
     const responseTime = Date.now() - start;
 
-    // If we got 402, parse the payment details
+    // Jika 402, verifikasi penuh
     if (httpStatus === 402) {
       try {
         const responseBody = JSON.parse(response.body);
         if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
           const offer = responseBody.accepts[0];
-          const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
+          const rawAmount = String(offer.maxAmountRequired || offer.amount || candidate.rawPrice || '');
           const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
 
           return {
@@ -360,7 +359,7 @@ async function checkEndpoint(base, candidate, timeout) {
             status: 'success',
             x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
             price: rawAmount,
-            priceReadable: priceReadable,
+            priceReadable,
             network: offer.network || candidate.network || '',
             asset: offer.asset || candidate.asset || '',
             payTo: offer.payTo || '',
@@ -373,19 +372,22 @@ async function checkEndpoint(base, candidate, timeout) {
           };
         }
       } catch (err) {
-        // 402 but invalid JSON
+        // 402 tapi JSON tidak valid, lanjut ke bawah
       }
     }
 
-    // If not 402, but we have metadata from discovery, report as public_info
+    // Jika bukan 402, tapi kita punya metadata dari discovery, laporkan sebagai public_info
     if (candidate.rawPrice || candidate.network || candidate.asset) {
+      const priceReadable = candidate.rawPrice
+        ? `$${(parseInt(candidate.rawPrice, 10) / 1000000).toFixed(6)}`
+        : '';
       return {
         domain: base,
         path,
         status: 'public_info',
         x402Version: '',
-        price: candidate.rawPrice || '',
-        priceReadable: candidate.rawPrice ? `$${(parseInt(candidate.rawPrice, 10) / 1000000).toFixed(6)}` : '',
+        price: String(candidate.rawPrice || ''),
+        priceReadable,
         network: candidate.network || '',
         asset: candidate.asset || '',
         payTo: '',
@@ -398,8 +400,7 @@ async function checkEndpoint(base, candidate, timeout) {
       };
     }
 
-    // Nothing found
-    return null;
+    return null; // tidak ada informasi sama sekali
   } catch (err) {
     console.log(`[CHECK] ${method} ${url} → ${err.message}`);
     return null;
@@ -439,7 +440,7 @@ for (const base of targetDomains) {
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
 
-    // Try public well-known endpoints in order
+    // Coba well-known endpoints secara berurutan
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
