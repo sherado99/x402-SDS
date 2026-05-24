@@ -170,7 +170,6 @@ async function discoverPathsFromWellKnown(base, timeout) {
   return null;
 }
 
-// Agent services discovery (agentsvc.io style)
 async function discoverFromAgentServices(base, timeout) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
   try {
@@ -185,7 +184,6 @@ async function discoverFromAgentServices(base, timeout) {
     const info = JSON.parse(wellKnownRes.body);
     if (!info.catalog_endpoint || !info.execution_endpoint) return null;
 
-    // Fetch catalog
     const catalogRes = await got(info.catalog_endpoint, {
       method: 'GET',
       timeout: { request: timeout },
@@ -201,7 +199,10 @@ async function discoverFromAgentServices(base, timeout) {
     const paths = services.map(s => {
       const slug = s.slug || s.id || s.name;
       if (!slug) return null;
-      return info.execution_endpoint.replace('{service}', slug);
+      // Ambil hanya pathname, bukan URL absolut
+      const urlObj = new URL(info.execution_endpoint);
+      const pathOnly = urlObj.pathname.replace('{service}', slug);
+      return pathOnly;
     }).filter(p => p);
 
     return paths.length > 0 ? paths : null;
