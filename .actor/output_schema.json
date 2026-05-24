@@ -28,13 +28,19 @@
     },
     "price": {
       "type": "string",
-      "description": "Price per call in the smallest unit of the payment token.",
-      "title": "Price",
+      "description": "Raw price in atomic units of the payment token.",
+      "title": "Price (atomic units)",
       "template": "{{price}}"
+    },
+    "priceReadable": {
+      "type": "string",
+      "description": "Price per call in USDC (e.g., $0.001000).",
+      "title": "Price (USDC)",
+      "template": "{{priceReadable}}"
     },
     "network": {
       "type": "string",
-      "description": "Blockchain network for payment (e.g., eip155:8453 for Base).",
+      "description": "Blockchain network for payment (e.g., base).",
       "title": "Network",
       "template": "{{network}}"
     },
@@ -99,5 +105,5 @@
       "template": "{{download_pdf}}"
     }
   },
-  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf"]
+  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable"]
 }
