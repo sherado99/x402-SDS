@@ -134,6 +134,9 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
+// ========== DISCOVERY FUNCTIONS ==========
+
+// Standard well-known / openapi
 async function discoverPathsFromWellKnown(base, timeout) {
   const endpoints = [
     `https://${base}/.well-known/x402`,
@@ -149,33 +152,65 @@ async function discoverPathsFromWellKnown(base, timeout) {
         throwHttpErrors: false,
         retry: { limit: 0 },
       });
+      if (response.statusCode !== 200) continue;
 
-      if (response.statusCode === 200) {
-        const body = JSON.parse(response.body);
+      const body = JSON.parse(response.body);
 
-        // Format 1: /.well-known/x402 → { resources: [{ path: ... }] }
-        if (body.resources && Array.isArray(body.resources)) {
-          return body.resources.map(r => r.path).filter(p => p);
-        }
+      if (body.resources && Array.isArray(body.resources)) {
+        return body.resources.map(r => r.path).filter(p => p);
+      }
 
-        // Format 2: /.well-known/mpp → { resources: [{ path: ... }] }
-        if (body.resources && Array.isArray(body.resources)) {
-          return body.resources.map(r => r.path).filter(p => p);
-        }
-
-        // Format 3: openapi.json → paths object
-        if (body.paths && typeof body.paths === 'object') {
-          return Object.keys(body.paths).filter(p => p.includes('x402'));
-        }
+      if (body.paths && typeof body.paths === 'object') {
+        return Object.keys(body.paths).filter(p => p.includes('x402'));
       }
     } catch (err) {
-      // Lanjut ke endpoint berikutnya
       continue;
     }
   }
-
-  return null; // Tidak ada yang berhasil
+  return null;
 }
+
+// Agent services discovery (agentsvc.io style)
+async function discoverFromAgentServices(base, timeout) {
+  const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
+  try {
+    const wellKnownRes = await got(wellKnownUrl, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    if (wellKnownRes.statusCode !== 200) return null;
+
+    const info = JSON.parse(wellKnownRes.body);
+    if (!info.catalog_endpoint || !info.execution_endpoint) return null;
+
+    // Fetch catalog
+    const catalogRes = await got(info.catalog_endpoint, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    if (catalogRes.statusCode !== 200) return null;
+
+    const catalog = JSON.parse(catalogRes.body);
+    const services = catalog.services || catalog.data || [];
+    if (!Array.isArray(services)) return null;
+
+    const paths = services.map(s => {
+      const slug = s.slug || s.id || s.name;
+      if (!slug) return null;
+      return info.execution_endpoint.replace('{service}', slug);
+    }).filter(p => p);
+
+    return paths.length > 0 ? paths : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+// ========== ENDPOINT CHECKER ==========
 
 async function checkEndpoint(base, path, timeout) {
   const url = `https://${base}${path}`;
@@ -190,51 +225,34 @@ async function checkEndpoint(base, path, timeout) {
     const httpStatus = response.statusCode;
     const responseTime = Date.now() - start;
 
-    if (httpStatus === 402) {
-      try {
-        const body = JSON.parse(response.body);
-        if (body.accepts && Array.isArray(body.accepts) && body.accepts.length > 0) {
-          const offer = body.accepts[0];
-          return {
-            domain: base,
-            path,
-            status: 'success',
-            x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
-            price: offer.amount || '',
-            network: offer.network || '',
-            asset: offer.asset || '',
-            payTo: offer.payTo || '',
-            label: offer.label || '',
-            description: offer.description || '',
-            httpStatus: String(httpStatus),
-            responseTimeMs: String(responseTime),
-            errorMessage: '',
-            timestamp: new Date().toISOString(),
-          };
-        } else {
-          return {
-            domain: base,
-            path,
-            status: 'error',
-            x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
-            price: '',
-            network: '',
-            asset: '',
-            payTo: '',
-            label: '',
-            description: '',
-            httpStatus: String(httpStatus),
-            responseTimeMs: String(responseTime),
-            errorMessage: 'Missing accepts array in 402 response',
-            timestamp: new Date().toISOString(),
-          };
-        }
-      } catch (parseErr) {
+    if (httpStatus !== 402) return null; // Hanya tangkap 402
+
+    try {
+      const body = JSON.parse(response.body);
+      if (body.accepts && Array.isArray(body.accepts) && body.accepts.length > 0) {
+        const offer = body.accepts[0];
+        return {
+          domain: base,
+          path,
+          status: 'success',
+          x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
+          price: offer.amount || '',
+          network: offer.network || '',
+          asset: offer.asset || '',
+          payTo: offer.payTo || '',
+          label: offer.label || '',
+          description: offer.description || '',
+          httpStatus: String(httpStatus),
+          responseTimeMs: String(responseTime),
+          errorMessage: '',
+          timestamp: new Date().toISOString(),
+        };
+      } else {
         return {
           domain: base,
           path,
           status: 'error',
-          x402Version: '',
+          x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
           price: '',
           network: '',
           asset: '',
@@ -243,13 +261,28 @@ async function checkEndpoint(base, path, timeout) {
           description: '',
           httpStatus: String(httpStatus),
           responseTimeMs: String(responseTime),
-          errorMessage: 'Invalid JSON in 402 body',
+          errorMessage: 'Missing accepts array in 402 response',
           timestamp: new Date().toISOString(),
         };
       }
+    } catch (parseErr) {
+      return {
+        domain: base,
+        path,
+        status: 'error',
+        x402Version: '',
+        price: '',
+        network: '',
+        asset: '',
+        payTo: '',
+        label: '',
+        description: '',
+        httpStatus: String(httpStatus),
+        responseTimeMs: String(responseTime),
+        errorMessage: 'Invalid JSON in 402 body',
+        timestamp: new Date().toISOString(),
+      };
     }
-    // Bukan 402 → tidak dimasukkan ke hasil
-    return null;
   } catch (err) {
     return {
       domain: base,
@@ -294,36 +327,34 @@ if (includeSubdomains) {
   targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
-// ========== DISCOVERY ==========
+// ========== SCAN ==========
 
 const results = [];
 
 for (const base of targetDomains) {
   let pathsToCheck = [];
 
-  // Step 1: Coba discovery otomatis lewat .well-known/x402 atau openapi.json
-  if (!manualPaths || !manualPaths.trim()) {
-    console.log(`Attempting automatic discovery for ${base}...`);
-    const discovered = await discoverPathsFromWellKnown(base, timeout);
-    if (discovered && discovered.length > 0) {
-      console.log(`Discovered ${discovered.length} paths from well-known/openapi.`);
-      pathsToCheck = discovered;
+  if (manualPaths && manualPaths.trim()) {
+    pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
+  } else {
+    // Discovery otomatis: gabungkan well-known/openapi + agent-services
+    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout);
+    const fromAgent = await discoverFromAgentServices(base, timeout);
+    const discovered = [...(fromWellKnown || []), ...(fromAgent || [])];
+
+    if (discovered.length > 0) {
+      // Hapus duplikat
+      pathsToCheck = [...new Set(discovered)];
+      console.log(`Discovered ${pathsToCheck.length} paths for ${base}`);
     } else {
-      // Step 2: Fallback ke dictionary
-      console.log('No discovery endpoints found. Falling back to dictionary.');
+      console.log(`No discovery endpoints found for ${base}. Falling back to dictionary.`);
       pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
     }
-  } else {
-    // Manual paths dari input pengguna
-    pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
   }
 
-  // Scan setiap path
   for (const path of pathsToCheck) {
     const result = await checkEndpoint(base, path, timeout);
-    if (result) {
-      results.push(result);
-    }
+    if (result) results.push(result);
   }
 }
 
