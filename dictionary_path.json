@@ -1,0 +1,13 @@
+[
+  "/x402/",
+  "/x402/sapi",
+  "/x402/spdet",
+  "/x402/scdft",
+  "/x402/v1/",
+  "/x402/payment",
+  "/x402/checkout",
+  "/api/x402/",
+  "/api/x402/payment",
+  "/v1/x402",
+  "/.well-known/x402"
+]
