@@ -79,6 +79,9 @@ async function generateDOCX(domain, results) {
         children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
       } else if (row.errorMessage) {
         children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
+        if (row.priceReadable) {
+          children.push(new Paragraph({ text: `Scraped Price: ${row.priceReadable}`, spacing: { after: 40 } }));
+        }
       }
       children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
     }
@@ -117,6 +120,9 @@ async function generatePDF(domain, results) {
           doc.fontSize(10).text(`Description: ${row.description}`);
         } else if (row.errorMessage) {
           doc.fontSize(10).text(`Error: ${row.errorMessage}`);
+          if (row.priceReadable) {
+            doc.fontSize(10).text(`Scraped Price: ${row.priceReadable}`);
+          }
         }
         doc.fontSize(9).text(`HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`);
         doc.moveDown(0.5);
@@ -136,7 +142,6 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DISCOVERY FUNCTIONS ==========
 
-// Coba ambil daftar endpoint dari file OpenAPI/Swagger publik
 async function discoverFromOpenApi(base, timeout) {
   const candidates = [
     `https://${base}/openapi.json`,
@@ -158,6 +163,7 @@ async function discoverFromOpenApi(base, timeout) {
       const spec = JSON.parse(response.body);
       const paths = spec.paths || spec.routes || {};
       const discovered = [];
+      const externalDocsUrl = spec.externalDocs?.url || spec.info?.contact?.url || '';
 
       for (const [route, methods] of Object.entries(paths)) {
         const method = methods.post ? 'POST' : 'GET';
@@ -166,7 +172,12 @@ async function discoverFromOpenApi(base, timeout) {
         if (operation?.requestBody?.content?.['application/json']?.example) {
           exampleBody = operation.requestBody.content['application/json'].example;
         }
-        discovered.push({ path: route, method, body: exampleBody });
+        discovered.push({
+          path: route,
+          method,
+          body: exampleBody,
+          docsUrl: externalDocsUrl || `https://${base}/docs`,
+        });
       }
 
       if (discovered.length > 0) {
@@ -174,14 +185,12 @@ async function discoverFromOpenApi(base, timeout) {
         return discovered;
       }
     } catch (err) {
-      // Lanjut ke file berikutnya
       continue;
     }
   }
   return null;
 }
 
-// Standard well-known / openapi
 async function discoverPathsFromWellKnown(base, timeout) {
   const endpoints = [
     `https://${base}/.well-known/x402`,
@@ -200,7 +209,12 @@ async function discoverPathsFromWellKnown(base, timeout) {
 
       const body = JSON.parse(response.body);
       if (body.resources && Array.isArray(body.resources)) {
-        return body.resources.map(r => ({ path: r.path, method: 'GET', body: null }));
+        return body.resources.map(r => ({
+          path: r.path,
+          method: 'GET',
+          body: null,
+          docsUrl: '',
+        }));
       }
     } catch (err) {
       continue;
@@ -209,7 +223,6 @@ async function discoverPathsFromWellKnown(base, timeout) {
   return null;
 }
 
-// Agent services discovery (agentsvc.io style)
 async function discoverFromAgentServices(base, timeout) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
 
@@ -269,7 +282,12 @@ async function discoverFromAgentServices(base, timeout) {
         }
       }
 
-      discovered.push({ path: pathOnly, method: 'POST', body: exampleBody || {} });
+      discovered.push({
+        path: pathOnly,
+        method: 'POST',
+        body: exampleBody || {},
+        docsUrl: info.docs || '',
+      });
     }
 
     return discovered.length > 0 ? discovered : null;
@@ -296,9 +314,55 @@ function buildExampleBody(schema) {
   return body;
 }
 
+// ========== DOCUMENTATION SCRAPER ==========
+
+async function scrapeDocumentationForPrice(docsUrl, path, timeout) {
+  if (!docsUrl) return '';
+  console.log(`[SCRAPE] Trying to scrape price from ${docsUrl} for ${path}`);
+
+  try {
+    const response = await got(docsUrl, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+
+    if (response.statusCode !== 200) return '';
+
+    const html = response.body;
+    const text = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+    // Cari pola harga: $0.01, $0.005, 1 credit, 1 USDC, Price: 0.01, dll.
+    const pricePatterns = [
+      /\$\s*(\d+\.?\d*)\s*(USDC|USD)?/gi,
+      /(\d+\.?\d*)\s*(USDC|USD|credit)/gi,
+      /Price:\s*\$?(\d+\.?\d*)/gi,
+      /Cost:\s*\$?(\d+\.?\d*)/gi,
+    ];
+
+    for (const pattern of pricePatterns) {
+      const match = text.match(pattern);
+      if (match) {
+        const price = match[0].replace(/\s+/g, ' ').trim();
+        return price;
+      }
+    }
+
+    return '';
+  } catch (err) {
+    console.log(`[SCRAPE] Failed to scrape ${docsUrl}: ${err.message}`);
+    return '';
+  }
+}
+
 // ========== ENDPOINT CHECKER ==========
 
-async function checkEndpoint(base, path, method, body, timeout) {
+async function checkEndpoint(base, path, method, body, timeout, docsUrl = '') {
   const url = `https://${base}${path}`;
   const start = Date.now();
   
@@ -355,13 +419,15 @@ async function checkEndpoint(base, path, method, body, timeout) {
           timestamp: new Date().toISOString(),
         };
       } else {
+        // 402 tapi tanpa accepts array — coba scrape dokumentasi
+        const scrapedPrice = await scrapeDocumentationForPrice(docsUrl, path, timeout);
         return {
           domain: base,
           path,
           status: 'error',
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: '',
-          priceReadable: '',
+          priceReadable: scrapedPrice,
           network: '',
           asset: '',
           payTo: '',
@@ -374,13 +440,15 @@ async function checkEndpoint(base, path, method, body, timeout) {
         };
       }
     } catch (parseErr) {
+      // Invalid JSON — coba scrape dokumentasi
+      const scrapedPrice = await scrapeDocumentationForPrice(docsUrl, path, timeout);
       return {
         domain: base,
         path,
         status: 'error',
         x402Version: '',
         price: '',
-        priceReadable: '',
+        priceReadable: scrapedPrice,
         network: '',
         asset: '',
         payTo: '',
@@ -444,9 +512,8 @@ for (const base of targetDomains) {
 
   if (manualPaths && manualPaths.trim()) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
-    scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
+    scanList = paths.map(p => ({ path: p, method: 'GET', body: null, docsUrl: '' }));
   } else {
-    // Prioritaskan OpenAPI, lalu well-known, lalu agent-services, terakhir dictionary
     let discovered = await discoverFromOpenApi(base, timeout);
     if (!discovered) discovered = await discoverPathsFromWellKnown(base, timeout);
     if (!discovered) discovered = await discoverFromAgentServices(base, timeout);
@@ -456,12 +523,17 @@ for (const base of targetDomains) {
       console.log(`Discovered ${scanList.length} paths for ${base}`);
     } else {
       console.log(`No discovery endpoints found for ${base}. Falling back to dictionary.`);
-      scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
+      scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
+        path: p,
+        method: 'GET',
+        body: null,
+        docsUrl: '',
+      }));
     }
   }
 
   for (const item of scanList) {
-    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
+    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout, item.docsUrl || '');
     if (result) results.push(result);
   }
 }
