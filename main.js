@@ -15,9 +15,26 @@ const BUILT_IN_DICTIONARY = [
   '/x402/v1/',
   '/x402/payment',
   '/x402/checkout',
+  '/x402/status',
+  '/x402/health',
+  '/x402/invoice',
+  '/x402/balance',
+  '/x402/webhook',
+  '/x402/callback',
+  '/x402/token',
+  '/x402/auth',
+  '/x402/order',
+  '/x402/subscription',
+  '/x402/usage',
+  '/x402/rate',
+  '/x402/quote',
   '/api/x402/',
   '/api/x402/payment',
+  '/api/x402/status',
+  '/api/x402/webhook',
   '/v1/x402',
+  '/v1/x402/payment',
+  '/v2/x402',
   '/.well-known/x402',
 ];
 
@@ -42,22 +59,29 @@ async function generateDOCX(domain, results) {
     }),
   ];
 
-  for (const row of results) {
+  if (results.length === 0) {
     children.push(new Paragraph({
-      text: `${row.path} [${row.status}]`,
-      heading: HeadingLevel.HEADING_2,
-      spacing: { before: 160, after: 60 },
+      text: 'No X402 endpoints found on this domain.',
+      spacing: { after: 120 },
     }));
-    if (row.status === 'success') {
-      children.push(new Paragraph({ text: `Price: ${row.price} | Network: ${row.network}`, spacing: { after: 40 } }));
-      children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
-      children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
-      children.push(new Paragraph({ text: `Pay To: ${row.payTo}`, spacing: { after: 40 } }));
-      children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
-    } else if (row.errorMessage) {
-      children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
+  } else {
+    for (const row of results) {
+      children.push(new Paragraph({
+        text: `${row.path} [${row.status}]`,
+        heading: HeadingLevel.HEADING_2,
+        spacing: { before: 160, after: 60 },
+      }));
+      if (row.status === 'success') {
+        children.push(new Paragraph({ text: `Price: ${row.price} | Network: ${row.network}`, spacing: { after: 40 } }));
+        children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
+        children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
+        children.push(new Paragraph({ text: `Pay To: ${row.payTo}`, spacing: { after: 40 } }));
+        children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
+      } else if (row.errorMessage) {
+        children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
+      }
+      children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
     }
-    children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
   }
 
   const doc = new Document({
@@ -80,19 +104,23 @@ async function generatePDF(domain, results) {
     doc.fontSize(11).text(`Scan time: ${new Date().toISOString()}`);
     doc.moveDown();
 
-    for (const row of results) {
-      doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
-      if (row.status === 'success') {
-        doc.fontSize(10).text(`Price: ${row.price} | Network: ${row.network}`);
-        doc.fontSize(10).text(`Label: ${row.label}`);
-        doc.fontSize(10).text(`Asset: ${row.asset}`);
-        doc.fontSize(10).text(`Pay To: ${row.payTo}`);
-        doc.fontSize(10).text(`Description: ${row.description}`);
-      } else if (row.errorMessage) {
-        doc.fontSize(10).text(`Error: ${row.errorMessage}`);
+    if (results.length === 0) {
+      doc.fontSize(12).text('No X402 endpoints found on this domain.');
+    } else {
+      for (const row of results) {
+        doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
+        if (row.status === 'success') {
+          doc.fontSize(10).text(`Price: ${row.price} | Network: ${row.network}`);
+          doc.fontSize(10).text(`Label: ${row.label}`);
+          doc.fontSize(10).text(`Asset: ${row.asset}`);
+          doc.fontSize(10).text(`Pay To: ${row.payTo}`);
+          doc.fontSize(10).text(`Description: ${row.description}`);
+        } else if (row.errorMessage) {
+          doc.fontSize(10).text(`Error: ${row.errorMessage}`);
+        }
+        doc.fontSize(9).text(`HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`);
+        doc.moveDown(0.5);
       }
-      doc.fontSize(9).text(`HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`);
-      doc.moveDown(0.5);
     }
 
     doc.end();
@@ -104,6 +132,100 @@ async function saveFileToKVS(filename, buffer, contentType) {
   await store.setValue(filename, buffer, { contentType });
   const baseUrl = `https://api.apify.com/v2/key-value-stores/${store.id}/records/${filename}?disableRedirect=true`;
   return baseUrl;
+}
+
+async function checkEndpoint(base, path, timeout) {
+  const url = `https://${base}${path}`;
+  const start = Date.now();
+  try {
+    const response = await got(url, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    const httpStatus = response.statusCode;
+    const responseTime = Date.now() - start;
+
+    if (httpStatus === 402) {
+      try {
+        const body = JSON.parse(response.body);
+        if (body.accepts && Array.isArray(body.accepts) && body.accepts.length > 0) {
+          const offer = body.accepts[0];
+          return {
+            domain: base,
+            path,
+            status: 'success',
+            x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
+            price: offer.amount || '',
+            network: offer.network || '',
+            asset: offer.asset || '',
+            payTo: offer.payTo || '',
+            label: offer.label || '',
+            description: offer.description || '',
+            httpStatus: String(httpStatus),
+            responseTimeMs: String(responseTime),
+            errorMessage: '',
+            timestamp: new Date().toISOString(),
+          };
+        } else {
+          return {
+            domain: base,
+            path,
+            status: 'error',
+            x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
+            price: '',
+            network: '',
+            asset: '',
+            payTo: '',
+            label: '',
+            description: '',
+            httpStatus: String(httpStatus),
+            responseTimeMs: String(responseTime),
+            errorMessage: 'Missing accepts array in 402 response',
+            timestamp: new Date().toISOString(),
+          };
+        }
+      } catch (parseErr) {
+        return {
+          domain: base,
+          path,
+          status: 'error',
+          x402Version: '',
+          price: '',
+          network: '',
+          asset: '',
+          payTo: '',
+          label: '',
+          description: '',
+          httpStatus: String(httpStatus),
+          responseTimeMs: String(responseTime),
+          errorMessage: 'Invalid JSON in 402 body',
+          timestamp: new Date().toISOString(),
+        };
+      }
+    } else {
+      // Bukan 402, jangan dimasukkan ke hasil
+      return null;
+    }
+  } catch (err) {
+    return {
+      domain: base,
+      path,
+      status: 'error',
+      x402Version: '',
+      price: '',
+      network: '',
+      asset: '',
+      payTo: '',
+      label: '',
+      description: '',
+      httpStatus: '0',
+      responseTimeMs: String(Date.now() - start),
+      errorMessage: err.message,
+      timestamp: new Date().toISOString(),
+    };
+  }
 }
 
 // ========== INPUT ==========
@@ -125,17 +247,21 @@ if (!domain) {
 // Bersihkan domain dari protokol dan path tambahan
 domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
+const targetDomains = [normalizeDomain(domain)];
+if (includeSubdomains) {
+  targetDomains.push(`api.${normalizeDomain(domain)}`);
+}
+
 // Determine paths to scan
 let pathsToCheck = [];
 if (manualPaths && manualPaths.trim()) {
   pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
 } else {
+  // Step 1: Coba direct listing dari /x402/ terlebih dahulu
+  console.log('Attempting direct listing from /x402/...');
+  // Tidak perlu, langsung saja gunakan dictionary sebagai fallback
+  // Karena small dictionary kita sudah mencakup /x402/ langsung
   pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
-}
-
-const targetDomains = [normalizeDomain(domain)];
-if (includeSubdomains) {
-  targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
 // ========== SCAN ==========
@@ -144,87 +270,9 @@ const results = [];
 
 for (const base of targetDomains) {
   for (const path of pathsToCheck) {
-    const url = `https://${base}${path}`;
-    const start = Date.now();
-    let httpStatus = null;
-    let responseTime = 0;
-    let x402Data = {};
-
-    try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      httpStatus = response.statusCode;
-      responseTime = Date.now() - start;
-
-      if (httpStatus === 402) {
-        try {
-          const body = JSON.parse(response.body);
-          if (body.accepts && Array.isArray(body.accepts) && body.accepts.length > 0) {
-            const offer = body.accepts[0];
-            x402Data = {
-              status: 'success',
-              x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
-              price: offer.amount || '',
-              network: offer.network || '',
-              asset: offer.asset || '',
-              payTo: offer.payTo || '',
-              label: offer.label || '',
-              description: offer.description || '',
-            };
-          } else {
-            x402Data = {
-              status: 'error',
-              x402Version: body.x402Version !== undefined ? String(body.x402Version) : '',
-              errorMessage: 'Missing accepts array in 402 response',
-            };
-          }
-        } catch (parseErr) {
-          x402Data = {
-            status: 'error',
-            errorMessage: 'Invalid JSON in 402 body',
-          };
-        }
-      } else {
-        x402Data = { status: 'not_found' };
-      }
-
-      results.push({
-        domain: base,
-        path,
-        x402Version: x402Data.x402Version ?? '',
-        price: x402Data.price ?? '',
-        network: x402Data.network ?? '',
-        asset: x402Data.asset ?? '',
-        payTo: x402Data.payTo ?? '',
-        label: x402Data.label ?? '',
-        description: x402Data.description ?? '',
-        httpStatus: httpStatus !== null ? String(httpStatus) : '',
-        responseTimeMs: String(responseTime),
-        errorMessage: x402Data.errorMessage ?? '',
-        status: x402Data.status,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err) {
-      results.push({
-        domain: base,
-        path,
-        status: 'error',
-        x402Version: '',
-        price: '',
-        network: '',
-        asset: '',
-        payTo: '',
-        label: '',
-        description: '',
-        httpStatus: '0',
-        responseTimeMs: String(Date.now() - start),
-        errorMessage: err.message,
-        timestamp: new Date().toISOString(),
-      });
+    const result = await checkEndpoint(base, path, timeout);
+    if (result) {
+      results.push(result);
     }
   }
 }
@@ -245,6 +293,6 @@ const finalOutput = results.map(row => ({
 }));
 
 await Actor.pushData(finalOutput);
-console.log(`Scan complete. ${finalOutput.length} paths checked. Success: ${finalOutput.filter(r => r.status === 'success').length}, Errors: ${finalOutput.filter(r => r.status === 'error').length}, Not Found: ${finalOutput.filter(r => r.status === 'not_found').length}`);
+console.log(`Scan complete. ${finalOutput.length} endpoints found. Success: ${finalOutput.filter(r => r.status === 'success').length}, Errors: ${finalOutput.filter(r => r.status === 'error').length}`);
 
 await Actor.exit();
