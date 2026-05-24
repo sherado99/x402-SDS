@@ -191,15 +191,10 @@ async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
 async function discoverFromAgentServices(base, timeout, proxyUrl) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
 
-  const options = {
-    method: 'GET',
-    timeout: { request: timeout },
-    throwHttpErrors: false,
-    retry: { limit: 0 },
-  };
-
+  const options = { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } };
   if (proxyUrl) {
-    options.agent = { https: new (require('https-proxy-agent'))(proxyUrl) };
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
   }
 
   try {
@@ -218,12 +213,15 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
 
     const discovered = [];
 
+    // Decode execution endpoint untuk memastikan {service} tidak ter-encode
+    let execEndpoint = decodeURIComponent(info.execution_endpoint);
+
     for (const service of services) {
       const slug = service.slug || service.id || service.name;
       if (!slug) continue;
 
-      const urlObj = new URL(info.execution_endpoint);
-      const pathOnly = urlObj.pathname.replace('{service}', slug);
+      // Ganti placeholder dengan slug asli
+      const pathOnly = new URL(execEndpoint.replace('{service}', slug)).pathname;
 
       let exampleBody = null;
       try {
@@ -237,9 +235,9 @@ async function discoverFromAgentServices(base, timeout, proxyUrl) {
       } catch (err) {}
 
       if (!exampleBody && info['x-quickstart'] && info['x-quickstart'].step2) {
-        const quickstartBody = info['x-quickstart'].step2.match(/body:\s*({[^}]+})/);
-        if (quickstartBody) {
-          try { exampleBody = JSON.parse(quickstartBody[1]); } catch (e) {}
+        const match = info['x-quickstart'].step2.match(/body:\s*({[^}]+})/);
+        if (match) {
+          try { exampleBody = JSON.parse(match[1]); } catch (e) {}
         }
       }
 
