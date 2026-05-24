@@ -1,0 +1,16 @@
+{
+  "domain": { "type": "string" },
+  "path": { "type": "string" },
+  "status": { "type": "string" },
+  "x402Version": { "type": "integer" },
+  "price": { "type": "string" },
+  "network": { "type": "string" },
+  "asset": { "type": "string" },
+  "payTo": { "type": "string" },
+  "label": { "type": "string" },
+  "description": { "type": "string" },
+  "httpStatus": { "type": "integer" },
+  "responseTimeMs": { "type": "integer" },
+  "errorMessage": { "type": "string" },
+  "timestamp": { "type": "string" }
+}
