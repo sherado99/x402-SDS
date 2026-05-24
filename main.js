@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { CheerioCrawler, Dataset } from 'crawlee';
+import { CheerioCrawler } from 'crawlee';
 import got from 'got';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
@@ -135,6 +135,140 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
+// ========== DIRECT JSON DISCOVERY ==========
+
+async function discoverFromHealthEndpoint(base, timeout) {
+  const url = `https://${base}/health`;
+  try {
+    const response = await got(url, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    if (response.statusCode !== 200) return null;
+
+    const data = JSON.parse(response.body);
+    const candidates = [];
+
+    // Sentinel style: data.endpoints = [{ endpoint: '/verify/protocol', price: '$0.008 USDC', ... }]
+    if (data.endpoints && Array.isArray(data.endpoints)) {
+      for (const ep of data.endpoints) {
+        const path = ep.endpoint || ep.path;
+        if (!path) continue;
+        candidates.push({
+          path,
+          method: 'GET',
+          body: null,
+          source: url,
+          rawPrice: ep.price || ep.x402Price || '',
+          network: ep.network || '',
+          asset: ep.asset || '',
+          description: ep.description || '',
+        });
+      }
+    }
+
+    // Generic: data.services, data.routes
+    const services = data.services || data.routes || [];
+    for (const svc of services) {
+      const path = svc.endpoint || svc.path || svc.url;
+      if (!path || candidates.find(c => c.path === path)) continue;
+      candidates.push({
+        path,
+        method: svc.method || 'GET',
+        body: null,
+        source: url,
+        rawPrice: svc.price || svc.x402Price || '',
+        network: svc.network || '',
+        asset: svc.asset || '',
+        description: svc.description || '',
+      });
+    }
+
+    return candidates.length > 0 ? candidates : null;
+  } catch (err) {
+    console.log(`[HEALTH] Error: ${err.message}`);
+    return null;
+  }
+}
+
+async function discoverFromOpenAPI(base, timeout) {
+  const candidates = [];
+  const openApiPaths = ['/openapi.json', '/swagger.json', '/api-docs.json', '/v3/api-docs'];
+
+  for (const apiPath of openApiPaths) {
+    const url = `https://${base}${apiPath}`;
+    try {
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode !== 200) continue;
+
+      const spec = JSON.parse(response.body);
+      if (!spec.paths) continue;
+
+      for (const [path, methods] of Object.entries(spec.paths)) {
+        // Ambil metode pertama yang tersedia
+        const method = Object.keys(methods)[0] || 'GET';
+        const operation = methods[method];
+
+        // Cari informasi x402 di berbagai lokasi
+        let price = '';
+        let network = '';
+        let asset = '';
+        let description = '';
+
+        // Di operation.x-payment-info
+        if (operation['x-payment-info']) {
+          const pi = operation['x-payment-info'];
+          price = pi.price || pi.amount || '';
+          network = pi.network || '';
+          asset = pi.asset || pi.token || '';
+          description = pi.description || '';
+        }
+
+        // Di operation.responses['402']
+        const resp402 = operation.responses?.['402'];
+        if (resp402?.content?.['application/json']?.example?.accepts) {
+          const offer = resp402.content['application/json'].example.accepts[0] || {};
+          price = price || offer.maxAmountRequired || offer.amount || '';
+          network = network || offer.network || '';
+          asset = asset || offer.asset || '';
+          description = description || offer.description || operation.description || '';
+        }
+
+        // Di server-wide x-payment
+        if (!price && spec['x-payment-info']) {
+          const pi = spec['x-payment-info'];
+          price = pi.price || '';
+          network = pi.network || '';
+          asset = pi.asset || '';
+        }
+
+        candidates.push({
+          path,
+          method: method.toUpperCase(),
+          body: null,
+          source: url,
+          rawPrice: price,
+          network,
+          asset,
+          description,
+        });
+      }
+      break; // Gunakan file OpenAPI pertama yang ditemukan
+    } catch (err) {
+      console.log(`[OPENAPI] ${url} error: ${err.message}`);
+    }
+  }
+
+  return candidates.length > 0 ? candidates : null;
+}
+
 // ========== KEYWORD FILTER ==========
 function containsX402Keywords(text) {
   if (!text) return false;
@@ -149,10 +283,8 @@ async function crawlDocumentation(domain, timeout) {
     `https://${domain}/api`,
     `https://${domain}/reference`,
     `https://${domain}/developers`,
+    `https://${domain}`,
   ];
-
-  // Also crawl the root domain for links
-  startUrls.push(`https://${domain}`);
 
   const discoveredPages = new Set();
 
@@ -166,14 +298,13 @@ async function crawlDocumentation(domain, timeout) {
         discoveredPages.add(request.url);
         console.log(`[CRAWL] Found relevant page: ${request.url}`);
 
-        // Enqueue links that contain keywords
         await enqueueLinks({
           transformRequestFunction(req) {
             const linkText = $(`a[href="${req.url}"]`).text() || '';
             if (containsX402Keywords(req.url) || containsX402Keywords(linkText)) {
               return req;
             }
-            return false; // skip
+            return false;
           },
         });
       }
@@ -188,18 +319,41 @@ async function crawlDocumentation(domain, timeout) {
 function extractEndpointCandidates(pageHtml, pageUrl) {
   const candidates = [];
 
-  // Regex to find API endpoints (paths, URLs)
+  // If the page is pure JSON, try to parse it as structured data
+  if (pageHtml.trim().startsWith('{') || pageHtml.trim().startsWith('[')) {
+    try {
+      const data = JSON.parse(pageHtml);
+      // Well-known style: { resources: [...] }
+      if (data.resources && Array.isArray(data.resources)) {
+        for (const res of data.resources) {
+          if (res.path) {
+            candidates.push({
+              path: res.path,
+              method: 'GET',
+              body: null,
+              source: pageUrl,
+              rawPrice: res.price || '',
+              network: res.network || '',
+              asset: res.asset || '',
+              description: res.description || '',
+            });
+          }
+        }
+      }
+      return candidates;
+    } catch (err) {
+      // Not JSON, continue with regex
+    }
+  }
+
+  // HTML scraping with regex
   const endpointPatterns = [
-    // Common path patterns like /api/v1/users, /x402/sapi
     /['"](\/[a-zA-Z0-9_\-\/\.]+)['"]/g,
-    // Markdown links: [text](/path)
     /\[([^\]]+)\]\((\/[a-zA-Z0-9_\-\/\.]+)\)/g,
-    // HTML href values
     /href="(\/[a-zA-Z0-9_\-\/\.]+)"/g,
   ];
 
-  // Extract potential endpoints from text that also contains "x402" or "agent" nearby
-  const textBlocks = pageHtml.split(/<[^>]+>/).filter(Boolean); // crude text extraction
+  const textBlocks = pageHtml.split(/<[^>]+>/).filter(Boolean);
   for (const block of textBlocks) {
     if (!containsX402Keywords(block)) continue;
 
@@ -210,9 +364,13 @@ function extractEndpointCandidates(pageHtml, pageUrl) {
         if (path && path.startsWith('/') && path.length > 1) {
           candidates.push({
             path,
-            method: 'GET', // default, will be overridden by scanner
+            method: 'GET',
             body: null,
             source: pageUrl,
+            rawPrice: '',
+            network: '',
+            asset: '',
+            description: '',
           });
         }
       }
@@ -233,8 +391,9 @@ function extractEndpointCandidates(pageHtml, pageUrl) {
   return unique;
 }
 
-// ========== PHASE 3: SCANNER (existing, enhanced) ==========
-async function checkEndpoint(base, path, method, body, timeout) {
+// ========== PHASE 3: SCANNER ==========
+async function checkEndpoint(base, candidate, timeout) {
+  const { path, method = 'GET', body = null } = candidate;
   const url = `https://${base}${path}`;
   const start = Date.now();
   
@@ -268,7 +427,7 @@ async function checkEndpoint(base, path, method, body, timeout) {
       if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
         const offer = responseBody.accepts[0];
         
-        const rawAmount = offer.maxAmountRequired || offer.amount || '';
+        const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
         const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
 
         return {
@@ -278,11 +437,11 @@ async function checkEndpoint(base, path, method, body, timeout) {
           x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
           price: rawAmount,
           priceReadable: priceReadable,
-          network: offer.network || '',
-          asset: offer.asset || '',
+          network: offer.network || candidate.network || '',
+          asset: offer.asset || candidate.asset || '',
           payTo: offer.payTo || '',
-          label: offer.label || '',
-          description: offer.description || '',
+          label: offer.label || candidate.description || '',
+          description: offer.description || candidate.description || '',
           httpStatus: String(httpStatus),
           responseTimeMs: String(responseTime),
           errorMessage: '',
@@ -381,41 +540,49 @@ for (const base of targetDomains) {
   } else {
     console.log(`[HYBRID] Starting discovery for ${base}`);
 
-    // Phase 1: Crawl documentation
-    const docPages = await crawlDocumentation(base, timeout);
-    console.log(`[HYBRID] Crawled ${docPages.length} relevant pages`);
+    // --- PRIORITY 1: Direct JSON endpoints (health, openapi.json) ---
+    let candidates = await discoverFromHealthEndpoint(base, timeout);
+    if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
 
-    // Phase 2: Scrape endpoints from pages
-    const candidateEndpoints = [];
-    for (const pageUrl of docPages) {
-      try {
-        const response = await got(pageUrl, {
-          method: 'GET',
-          timeout: { request: timeout },
-          throwHttpErrors: false,
-          retry: { limit: 0 },
-        });
-        if (response.statusCode === 200) {
-          const candidates = extractEndpointCandidates(response.body, pageUrl);
-          candidateEndpoints.push(...candidates);
-          console.log(`[SCRAPE] Extracted ${candidates.length} candidates from ${pageUrl}`);
-        }
-      } catch (err) {
-        console.log(`[SCRAPE ERROR] ${pageUrl}: ${err.message}`);
-      }
-    }
-
-    // Phase 3: Scan all candidates + dictionary fallback
-    if (candidateEndpoints.length > 0) {
-      scanList = candidateEndpoints;
-      console.log(`[HYBRID] Total candidates: ${scanList.length}`);
+    if (candidates && candidates.length > 0) {
+      scanList = candidates;
+      console.log(`[HEALTH/OPENAPI] Found ${candidates.length} endpoints`);
     } else {
-      console.log('[HYBRID] No candidates found, falling back to dictionary');
-      scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
-        path: p,
-        method: 'GET',
-        body: null,
-      }));
+      // --- PRIORITY 2: Crawl documentation ---
+      const docPages = await crawlDocumentation(base, timeout);
+      console.log(`[CRAWL] Crawled ${docPages.length} relevant pages`);
+
+      const candidateEndpoints = [];
+      for (const pageUrl of docPages) {
+        try {
+          const resp = await got(pageUrl, {
+            method: 'GET',
+            timeout: { request: timeout },
+            throwHttpErrors: false,
+            retry: { limit: 0 },
+          });
+          if (resp.statusCode === 200) {
+            const candidates = extractEndpointCandidates(resp.body, pageUrl);
+            candidateEndpoints.push(...candidates);
+            console.log(`[SCRAPE] Extracted ${candidates.length} candidates from ${pageUrl}`);
+          }
+        } catch (err) {
+          console.log(`[SCRAPE ERROR] ${pageUrl}: ${err.message}`);
+        }
+      }
+
+      if (candidateEndpoints.length > 0) {
+        scanList = candidateEndpoints;
+        console.log(`[CRAWL+SCRAPE] Total candidates: ${scanList.length}`);
+      } else {
+        // --- PRIORITY 3: Dictionary fallback ---
+        console.log('[FALLBACK] Using built-in dictionary');
+        scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
+          path: p,
+          method: 'GET',
+          body: null,
+        }));
+      }
     }
   }
 
@@ -424,7 +591,7 @@ for (const base of targetDomains) {
       console.log(`[SKIP] Invalid path: ${JSON.stringify(item)}`);
       continue;
     }
-    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
+    const result = await checkEndpoint(base, item, timeout);
     if (result) results.push(result);
   }
 }
