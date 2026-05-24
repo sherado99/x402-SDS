@@ -412,66 +412,85 @@ async function checkEndpoint(base, candidate, timeout) {
     options.json = body;
   }
 
-  try {
-    const response = await got(url, options);
-    const httpStatus = response.statusCode;
-    const responseTime = Date.now() - start;
+  // First attempt
+  let response = await got(url, options);
+  let httpStatus = response.statusCode;
+  let responseTime = Date.now() - start;
 
-    if (httpStatus !== 402) {
-      console.log(`[DEBUG] Non-402 body (first 200 chars): ${response.body?.slice(0, 200)}`);
-      return null;
-    }
-
+  // If not 402, check if it's a 400 asking for parameters
+  if (httpStatus !== 402) {
     try {
-      const responseBody = JSON.parse(response.body);
-      if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
-        const offer = responseBody.accepts[0];
+      const errorBody = JSON.parse(response.body);
+      if (httpStatus === 400 && errorBody.required_params && Array.isArray(errorBody.required_params)) {
+        console.log(`[RETRY] 400 with required params for ${path}, retrying with dummy body`);
         
-        const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
-        const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
+        // Build dummy body from required_params
+        const dummyBody = {};
+        for (const param of errorBody.required_params) {
+          dummyBody[param] = '0x0';
+        }
 
-        return {
-          domain: base,
-          path,
-          status: 'success',
-          x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-          price: rawAmount,
-          priceReadable: priceReadable,
-          network: offer.network || candidate.network || '',
-          asset: offer.asset || candidate.asset || '',
-          payTo: offer.payTo || '',
-          label: offer.label || candidate.description || '',
-          description: offer.description || candidate.description || '',
-          httpStatus: String(httpStatus),
-          responseTimeMs: String(responseTime),
-          errorMessage: '',
-          timestamp: new Date().toISOString(),
+        const retryOptions = {
+          method: 'POST',
+          timeout: { request: timeout },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+          headers: {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': '*/*',
+            'Content-Type': 'application/json'
+          },
+          json: dummyBody
         };
-      } else {
-        return {
-          domain: base,
-          path,
-          status: 'error',
-          x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-          price: '',
-          priceReadable: '',
-          network: '',
-          asset: '',
-          payTo: '',
-          label: '',
-          description: '',
-          httpStatus: String(httpStatus),
-          responseTimeMs: String(responseTime),
-          errorMessage: 'Missing accepts array in 402 response',
-          timestamp: new Date().toISOString(),
-        };
+
+        const retryStart = Date.now();
+        response = await got(url, retryOptions);
+        httpStatus = response.statusCode;
+        responseTime = Date.now() - retryStart;
       }
     } catch (parseErr) {
+      // Not JSON, ignore and continue with original response
+    }
+  }
+
+  // If still not 402 after retry, log and return null
+  if (httpStatus !== 402) {
+    console.log(`[DEBUG] Non-402 body (first 200 chars): ${response.body?.slice(0, 200)}`);
+    return null;
+  }
+
+  // Process 402 response (same as before)
+  try {
+    const responseBody = JSON.parse(response.body);
+    if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
+      const offer = responseBody.accepts[0];
+      
+      const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
+      const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
+
+      return {
+        domain: base,
+        path,
+        status: 'success',
+        x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
+        price: rawAmount,
+        priceReadable: priceReadable,
+        network: offer.network || candidate.network || '',
+        asset: offer.asset || candidate.asset || '',
+        payTo: offer.payTo || '',
+        label: offer.label || candidate.description || '',
+        description: offer.description || candidate.description || '',
+        httpStatus: String(httpStatus),
+        responseTimeMs: String(responseTime),
+        errorMessage: '',
+        timestamp: new Date().toISOString(),
+      };
+    } else {
       return {
         domain: base,
         path,
         status: 'error',
-        x402Version: '',
+        x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
         price: '',
         priceReadable: '',
         network: '',
@@ -481,12 +500,11 @@ async function checkEndpoint(base, candidate, timeout) {
         description: '',
         httpStatus: String(httpStatus),
         responseTimeMs: String(responseTime),
-        errorMessage: 'Invalid JSON in 402 body',
+        errorMessage: 'Missing accepts array in 402 response',
         timestamp: new Date().toISOString(),
       };
     }
-  } catch (err) {
-    console.log(`[ERROR] ${method} ${url} → ${err.message}`);
+  } catch (parseErr) {
     return {
       domain: base,
       path,
@@ -499,9 +517,9 @@ async function checkEndpoint(base, candidate, timeout) {
       payTo: '',
       label: '',
       description: '',
-      httpStatus: '0',
-      responseTimeMs: String(Date.now() - start),
-      errorMessage: err.message,
+      httpStatus: String(httpStatus),
+      responseTimeMs: String(responseTime),
+      errorMessage: 'Invalid JSON in 402 body',
       timestamp: new Date().toISOString(),
     };
   }
