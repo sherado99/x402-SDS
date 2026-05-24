@@ -109,7 +109,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
 // ========== INPUT ==========
 
 const input = await Actor.getInput();
-const {
+let {
   domain,
   paths: manualPaths,
   maxPaths = 100,
@@ -122,10 +122,8 @@ if (!domain) {
   await Actor.exit();
 }
 
-// Bersihkan domain: buang protokol & path
-if (domain) {
-  domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-}
+// Bersihkan domain dari protokol dan path tambahan
+domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
 // Determine paths to scan
 let pathsToCheck = [];
@@ -149,6 +147,7 @@ for (const base of targetDomains) {
     const url = `https://${base}${path}`;
     const start = Date.now();
     let httpStatus = null;
+    let responseTime = 0;
     let x402Data = {};
 
     try {
@@ -159,7 +158,7 @@ for (const base of targetDomains) {
         retry: { limit: 0 },
       });
       httpStatus = response.statusCode;
-      const responseTime = Date.now() - start;
+      responseTime = Date.now() - start;
 
       if (httpStatus === 402) {
         try {
@@ -204,7 +203,7 @@ for (const base of targetDomains) {
         label: x402Data.label ?? '',
         description: x402Data.description ?? '',
         httpStatus: httpStatus !== null ? String(httpStatus) : '',
-        responseTimeMs: responseTime !== undefined ? String(responseTime) : '',
+        responseTimeMs: String(responseTime),
         errorMessage: x402Data.errorMessage ?? '',
         status: x402Data.status,
         timestamp: new Date().toISOString(),
