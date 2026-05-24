@@ -134,6 +134,49 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
+async function discoverPathsFromWellKnown(base, timeout) {
+  const endpoints = [
+    `https://${base}/.well-known/x402`,
+    `https://${base}/.well-known/mpp`,
+    `https://${base}/openapi.json`,
+  ];
+
+  for (const url of endpoints) {
+    try {
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+
+      if (response.statusCode === 200) {
+        const body = JSON.parse(response.body);
+
+        // Format 1: /.well-known/x402 → { resources: [{ path: ... }] }
+        if (body.resources && Array.isArray(body.resources)) {
+          return body.resources.map(r => r.path).filter(p => p);
+        }
+
+        // Format 2: /.well-known/mpp → { resources: [{ path: ... }] }
+        if (body.resources && Array.isArray(body.resources)) {
+          return body.resources.map(r => r.path).filter(p => p);
+        }
+
+        // Format 3: openapi.json → paths object
+        if (body.paths && typeof body.paths === 'object') {
+          return Object.keys(body.paths).filter(p => p.includes('x402'));
+        }
+      }
+    } catch (err) {
+      // Lanjut ke endpoint berikutnya
+      continue;
+    }
+  }
+
+  return null; // Tidak ada yang berhasil
+}
+
 async function checkEndpoint(base, path, timeout) {
   const url = `https://${base}${path}`;
   const start = Date.now();
@@ -204,10 +247,9 @@ async function checkEndpoint(base, path, timeout) {
           timestamp: new Date().toISOString(),
         };
       }
-    } else {
-      // Bukan 402, jangan dimasukkan ke hasil
-      return null;
     }
+    // Bukan 402 → tidak dimasukkan ke hasil
+    return null;
   } catch (err) {
     return {
       domain: base,
@@ -244,7 +286,7 @@ if (!domain) {
   await Actor.exit();
 }
 
-// Bersihkan domain dari protokol dan path tambahan
+// Bersihkan domain
 domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
 
 const targetDomains = [normalizeDomain(domain)];
@@ -252,23 +294,31 @@ if (includeSubdomains) {
   targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
-// Determine paths to scan
-let pathsToCheck = [];
-if (manualPaths && manualPaths.trim()) {
-  pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
-} else {
-  // Step 1: Coba direct listing dari /x402/ terlebih dahulu
-  console.log('Attempting direct listing from /x402/...');
-  // Tidak perlu, langsung saja gunakan dictionary sebagai fallback
-  // Karena small dictionary kita sudah mencakup /x402/ langsung
-  pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
-}
-
-// ========== SCAN ==========
+// ========== DISCOVERY ==========
 
 const results = [];
 
 for (const base of targetDomains) {
+  let pathsToCheck = [];
+
+  // Step 1: Coba discovery otomatis lewat .well-known/x402 atau openapi.json
+  if (!manualPaths || !manualPaths.trim()) {
+    console.log(`Attempting automatic discovery for ${base}...`);
+    const discovered = await discoverPathsFromWellKnown(base, timeout);
+    if (discovered && discovered.length > 0) {
+      console.log(`Discovered ${discovered.length} paths from well-known/openapi.`);
+      pathsToCheck = discovered;
+    } else {
+      // Step 2: Fallback ke dictionary
+      console.log('No discovery endpoints found. Falling back to dictionary.');
+      pathsToCheck = BUILT_IN_DICTIONARY.slice(0, maxPaths);
+    }
+  } else {
+    // Manual paths dari input pengguna
+    pathsToCheck = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
+  }
+
+  // Scan setiap path
   for (const path of pathsToCheck) {
     const result = await checkEndpoint(base, path, timeout);
     if (result) {
@@ -285,7 +335,6 @@ const pdfBuffer = await generatePDF(domain, results);
 const docxUrl = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 const pdfUrl = await saveFileToKVS('OUTPUT.pdf', pdfBuffer, 'application/pdf');
 
-// Attach download URLs to each result row
 const finalOutput = results.map(row => ({
   ...row,
   download_docx: docxUrl,
