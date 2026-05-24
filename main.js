@@ -137,21 +137,27 @@ async function saveFileToKVS(filename, buffer, contentType) {
 // ========== DISCOVERY FUNCTIONS ==========
 
 // Standard well-known / openapi
-async function discoverPathsFromWellKnown(base, timeout) {
+async function discoverPathsFromWellKnown(base, timeout, proxyUrl) {
   const endpoints = [
     `https://${base}/.well-known/x402`,
     `https://${base}/.well-known/mpp`,
     `https://${base}/openapi.json`,
   ];
 
+  const options = {
+    method: 'GET',
+    timeout: { request: timeout },
+    throwHttpErrors: false,
+    retry: { limit: 0 },
+  };
+
+  if (proxyUrl) {
+    options.agent = { https: new (require('https-proxy-agent'))(proxyUrl) };
+  }
+
   for (const url of endpoints) {
     try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
+      const response = await got(url, options);
       if (response.statusCode !== 200) continue;
 
       const body = JSON.parse(response.body);
@@ -182,27 +188,28 @@ async function discoverPathsFromWellKnown(base, timeout) {
 }
 
 // Agent services discovery (agentsvc.io style) - POST dengan body dari input_schema
-async function discoverFromAgentServices(base, timeout) {
+async function discoverFromAgentServices(base, timeout, proxyUrl) {
   const wellKnownUrl = `https://${base}/.well-known/agent-services.json`;
+
+  const options = {
+    method: 'GET',
+    timeout: { request: timeout },
+    throwHttpErrors: false,
+    retry: { limit: 0 },
+  };
+
+  if (proxyUrl) {
+    options.agent = { https: new (require('https-proxy-agent'))(proxyUrl) };
+  }
+
   try {
-    const wellKnownRes = await got(wellKnownUrl, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-    });
+    const wellKnownRes = await got(wellKnownUrl, options);
     if (wellKnownRes.statusCode !== 200) return null;
 
     const info = JSON.parse(wellKnownRes.body);
     if (!info.catalog_endpoint || !info.execution_endpoint) return null;
 
-    // Ambil daftar service
-    const catalogRes = await got(info.catalog_endpoint, {
-      method: 'GET',
-      timeout: { request: timeout },
-      throwHttpErrors: false,
-      retry: { limit: 0 },
-    });
+    const catalogRes = await got(info.catalog_endpoint, options);
     if (catalogRes.statusCode !== 200) return null;
 
     const catalog = JSON.parse(catalogRes.body);
@@ -215,43 +222,31 @@ async function discoverFromAgentServices(base, timeout) {
       const slug = service.slug || service.id || service.name;
       if (!slug) continue;
 
-      // Dapatkan path eksekusi
       const urlObj = new URL(info.execution_endpoint);
       const pathOnly = urlObj.pathname.replace('{service}', slug);
 
-      // Dapatkan input_schema dari detail service
       let exampleBody = null;
       try {
-        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, {
-          method: 'GET',
-          timeout: { request: timeout },
-          throwHttpErrors: false,
-          retry: { limit: 0 },
-        });
+        const detailRes = await got(`${info.catalog_endpoint}/${slug}`, options);
         if (detailRes.statusCode === 200) {
           const detail = JSON.parse(detailRes.body);
           if (detail.input_schema) {
             exampleBody = buildExampleBody(detail.input_schema);
           }
         }
-      } catch (err) {
-        // Abaikan jika detail service tidak bisa diambil
-      }
+      } catch (err) {}
 
-      // Fallback: gunakan x-quickstart untuk service pertama
       if (!exampleBody && info['x-quickstart'] && info['x-quickstart'].step2) {
         const quickstartBody = info['x-quickstart'].step2.match(/body:\s*({[^}]+})/);
         if (quickstartBody) {
-          try {
-            exampleBody = JSON.parse(quickstartBody[1]);
-          } catch (e) {}
+          try { exampleBody = JSON.parse(quickstartBody[1]); } catch (e) {}
         }
       }
 
       discovered.push({
         path: pathOnly,
         method: 'POST',
-        body: exampleBody || {} // minimal empty object
+        body: exampleBody || {}
       });
     }
 
@@ -282,17 +277,30 @@ function buildExampleBody(schema) {
 
 // ========== ENDPOINT CHECKER ==========
 
-async function checkEndpoint(base, path, method, body, timeout) {
+async function checkEndpoint(base, path, method, body, timeout, proxyUrl) {
   const url = `https://${base}${path}`;
   const start = Date.now();
+  
   const options = {
     method,
     timeout: { request: timeout },
     throwHttpErrors: false,
     retry: { limit: 0 },
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Accept': '*/*'
+    }
   };
+
   if (method === 'POST' && body) {
     options.json = body;
+  }
+
+  // ========== PROXY ==========
+  if (proxyUrl) {
+    console.log(`[PROXY] Using residential proxy for ${url}`);
+    const { HttpsProxyAgent } = await import('https-proxy-agent');
+    options.agent = { https: new HttpsProxyAgent(proxyUrl) };
   }
 
   try {
@@ -300,7 +308,12 @@ async function checkEndpoint(base, path, method, body, timeout) {
     const httpStatus = response.statusCode;
     const responseTime = Date.now() - start;
 
-    if (httpStatus !== 402) return null;
+    console.log(`[CHECK] ${method} ${url} → ${httpStatus}`);
+
+    if (httpStatus !== 402) {
+      console.log(`[DEBUG] Non-402 body (first 200 chars): ${response.body?.slice(0, 200)}`);
+      return null;
+    }
 
     try {
       const responseBody = JSON.parse(response.body);
@@ -359,6 +372,7 @@ async function checkEndpoint(base, path, method, body, timeout) {
       };
     }
   } catch (err) {
+    console.log(`[ERROR] ${method} ${url} → ${err.message}`);
     return {
       domain: base,
       path,
@@ -387,6 +401,7 @@ let {
   maxPaths = 100,
   timeout = 5000,
   includeSubdomains = false,
+  useResidentialProxy = false, // <--- BARU
 } = input;
 
 if (!domain) {
@@ -402,19 +417,29 @@ if (includeSubdomains) {
   targetDomains.push(`api.${normalizeDomain(domain)}`);
 }
 
+// ========== PROXY SETUP ==========
+let proxyUrl = null;
+if (useResidentialProxy) {
+  const proxyConfig = await Actor.createProxyConfiguration({
+    groups: ['RESIDENTIAL'],
+  });
+  proxyUrl = await proxyConfig.newUrl();
+  console.log(`[PROXY] Using residential proxy: ${proxyUrl}`);
+}
+
 // ========== SCAN ==========
 
 const results = [];
 
 for (const base of targetDomains) {
-  let scanList = []; // Array of { path, method, body }
+  let scanList = [];
 
   if (manualPaths && manualPaths.trim()) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
     scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout) || [];
-    const fromAgent = await discoverFromAgentServices(base, timeout) || [];
+    const fromWellKnown = await discoverPathsFromWellKnown(base, timeout, proxyUrl) || [];
+    const fromAgent = await discoverFromAgentServices(base, timeout, proxyUrl) || [];
     const combined = [...fromWellKnown, ...fromAgent];
 
     if (combined.length > 0) {
@@ -427,7 +452,7 @@ for (const base of targetDomains) {
   }
 
   for (const item of scanList) {
-    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout);
+    const result = await checkEndpoint(base, item.path, item.method, item.body, timeout, proxyUrl);
     if (result) results.push(result);
   }
 }
