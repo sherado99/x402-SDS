@@ -1,5 +1,4 @@
 import { Actor } from 'apify';
-import { CheerioCrawler } from 'crawlee';
 import got from 'got';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
@@ -62,7 +61,7 @@ async function generateDOCX(domain, results) {
 
   if (results.length === 0) {
     children.push(new Paragraph({
-      text: 'No X402 endpoints found on this domain.',
+      text: 'No public X402 information found on this domain.',
       spacing: { after: 120 },
     }));
   } else {
@@ -106,7 +105,7 @@ async function generatePDF(domain, results) {
     doc.moveDown();
 
     if (results.length === 0) {
-      doc.fontSize(12).text('No X402 endpoints found on this domain.');
+      doc.fontSize(12).text('No public X402 information found on this domain.');
     } else {
       for (const row of results) {
         doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
@@ -135,12 +134,56 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
-// ========== DIRECT JSON DISCOVERY ==========
+// ========== PUBLIC INFORMATION DISCOVERY ==========
 
-async function discoverFromHealthEndpoint(base, timeout) {
-  const url = `https://${base}/health`;
+async function discoverFromWellKnownAgent(base, timeout) {
+  const paths = [
+    '/.well-known/agent-card.json',
+    '/.well-known/agent.json',
+  ];
+
+  for (const wkPath of paths) {
+    try {
+      const response = await got(`https://${base}${wkPath}`, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode !== 200) continue;
+
+      const data = JSON.parse(response.body);
+      const candidates = [];
+
+      // Extract endpoints from skills, services, or endpoints
+      const services = data.skills || data.services || data.endpoints || [];
+      for (const svc of services) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+        candidates.push({
+          path,
+          method: svc.method || 'GET',
+          body: null,
+          source: wkPath,
+          rawPrice: svc.price || svc.cost || '',
+          network: svc.network || '',
+          asset: svc.asset || '',
+          label: svc.name || svc.id || '',
+          description: svc.description || '',
+        });
+      }
+
+      if (candidates.length > 0) return candidates;
+    } catch (err) {
+      console.log(`[AGENT-CARD] ${wkPath} error: ${err.message}`);
+    }
+  }
+  return null;
+}
+
+async function discoverFromWellKnownX402(base, timeout) {
   try {
-    const response = await got(url, {
+    const response = await got(`https://${base}/.well-known/x402`, {
       method: 'GET',
       timeout: { request: timeout },
       throwHttpErrors: false,
@@ -149,58 +192,36 @@ async function discoverFromHealthEndpoint(base, timeout) {
     if (response.statusCode !== 200) return null;
 
     const data = JSON.parse(response.body);
+    if (!data.resources || !Array.isArray(data.resources)) return null;
+
     const candidates = [];
-
-    // Sentinel style: data.endpoints = [{ endpoint: '/verify/protocol', price: '$0.008 USDC', ... }]
-    if (data.endpoints && Array.isArray(data.endpoints)) {
-      for (const ep of data.endpoints) {
-        const path = ep.endpoint || ep.path;
-        if (!path) continue;
-        candidates.push({
-          path,
-          method: 'GET',
-          body: null,
-          source: url,
-          rawPrice: ep.price || ep.x402Price || '',
-          network: ep.network || '',
-          asset: ep.asset || '',
-          description: ep.description || '',
-        });
-      }
-    }
-
-    // Generic: data.services, data.routes
-    const services = data.services || data.routes || [];
-    for (const svc of services) {
-      const path = svc.endpoint || svc.path || svc.url;
-      if (!path || candidates.find(c => c.path === path)) continue;
+    for (const res of data.resources) {
+      if (!res.path) continue;
       candidates.push({
-        path,
-        method: svc.method || 'GET',
+        path: res.path,
+        method: 'GET',
         body: null,
-        source: url,
-        rawPrice: svc.price || svc.x402Price || '',
-        network: svc.network || '',
-        asset: svc.asset || '',
-        description: svc.description || '',
+        source: '/.well-known/x402',
+        rawPrice: res.price || '',
+        network: res.network || '',
+        asset: res.asset || '',
+        label: res.name || res.id || '',
+        description: res.description || '',
       });
     }
-
     return candidates.length > 0 ? candidates : null;
   } catch (err) {
-    console.log(`[HEALTH] Error: ${err.message}`);
+    console.log(`[WELL-KNOWN-X402] Error: ${err.message}`);
     return null;
   }
 }
 
 async function discoverFromOpenAPI(base, timeout) {
-  const candidates = [];
   const openApiPaths = ['/openapi.json', '/swagger.json', '/api-docs.json', '/v3/api-docs'];
 
   for (const apiPath of openApiPaths) {
-    const url = `https://${base}${apiPath}`;
     try {
-      const response = await got(url, {
+      const response = await got(`https://${base}${apiPath}`, {
         method: 'GET',
         timeout: { request: timeout },
         throwHttpErrors: false,
@@ -211,18 +232,17 @@ async function discoverFromOpenAPI(base, timeout) {
       const spec = JSON.parse(response.body);
       if (!spec.paths) continue;
 
+      const candidates = [];
+
       for (const [path, methods] of Object.entries(spec.paths)) {
-        // Ambil metode pertama yang tersedia
         const method = Object.keys(methods)[0] || 'GET';
         const operation = methods[method];
 
-        // Cari informasi x402 di berbagai lokasi
         let price = '';
         let network = '';
         let asset = '';
         let description = '';
 
-        // Di operation.x-payment-info
         if (operation['x-payment-info']) {
           const pi = operation['x-payment-info'];
           price = pi.price || pi.amount || '';
@@ -231,7 +251,6 @@ async function discoverFromOpenAPI(base, timeout) {
           description = pi.description || '';
         }
 
-        // Di operation.responses['402']
         const resp402 = operation.responses?.['402'];
         if (resp402?.content?.['application/json']?.example?.accepts) {
           const offer = resp402.content['application/json'].example.accepts[0] || {};
@@ -241,7 +260,6 @@ async function discoverFromOpenAPI(base, timeout) {
           description = description || offer.description || operation.description || '';
         }
 
-        // Di server-wide x-payment
         if (!price && spec['x-payment-info']) {
           const pi = spec['x-payment-info'];
           price = pi.price || '';
@@ -253,275 +271,138 @@ async function discoverFromOpenAPI(base, timeout) {
           path,
           method: method.toUpperCase(),
           body: null,
-          source: url,
+          source: apiPath,
           rawPrice: price,
           network,
           asset,
-          description,
+          label: operation.summary || operation.operationId || '',
+          description: description || operation.description || '',
         });
       }
-      break; // Gunakan file OpenAPI pertama yang ditemukan
+      return candidates.length > 0 ? candidates : null;
     } catch (err) {
-      console.log(`[OPENAPI] ${url} error: ${err.message}`);
+      console.log(`[OPENAPI] ${apiPath} error: ${err.message}`);
     }
   }
-
-  return candidates.length > 0 ? candidates : null;
+  return null;
 }
 
-// ========== KEYWORD FILTER ==========
-function containsX402Keywords(text) {
-  if (!text) return false;
-  const lower = text.toLowerCase();
-  return lower.includes('x402') || lower.includes('agent');
-}
+async function discoverFromHealth(base, timeout) {
+  try {
+    const response = await got(`https://${base}/health`, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    if (response.statusCode !== 200) return null;
 
-// ========== PHASE 1: CRAWLER ==========
-async function crawlDocumentation(domain, timeout) {
-  const startUrls = [
-    `https://${domain}/docs`,
-    `https://${domain}/api`,
-    `https://${domain}/reference`,
-    `https://${domain}/developers`,
-    `https://${domain}`,
-  ];
+    const data = JSON.parse(response.body);
+    const candidates = [];
 
-  const discoveredPages = new Set();
-
-  const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 50,
-    requestHandlerTimeoutSecs: 30,
-
-    async requestHandler({ request, $, enqueueLinks }) {
-      const bodyText = $('body').text();
-      if (containsX402Keywords(bodyText)) {
-        discoveredPages.add(request.url);
-        console.log(`[CRAWL] Found relevant page: ${request.url}`);
-
-        await enqueueLinks({
-          transformRequestFunction(req) {
-            const linkText = $(`a[href="${req.url}"]`).text() || '';
-            if (containsX402Keywords(req.url) || containsX402Keywords(linkText)) {
-              return req;
-            }
-            return false;
-          },
-        });
-      }
-    },
-  });
-
-  await crawler.run(startUrls);
-  return [...discoveredPages];
-}
-
-// ========== PHASE 2: SCRAPER ==========
-function extractEndpointCandidates(pageHtml, pageUrl) {
-  const candidates = [];
-
-  // If the page is pure JSON, try to parse it as structured data
-  if (pageHtml.trim().startsWith('{') || pageHtml.trim().startsWith('[')) {
-    try {
-      const data = JSON.parse(pageHtml);
-      // Well-known style: { resources: [...] }
-      if (data.resources && Array.isArray(data.resources)) {
-        for (const res of data.resources) {
-          if (res.path) {
-            candidates.push({
-              path: res.path,
-              method: 'GET',
-              body: null,
-              source: pageUrl,
-              rawPrice: res.price || '',
-              network: res.network || '',
-              asset: res.asset || '',
-              description: res.description || '',
-            });
-          }
-        }
-      }
-      return candidates;
-    } catch (err) {
-      // Not JSON, continue with regex
+    const services = data.endpoints || data.services || data.routes || [];
+    for (const svc of services) {
+      const path = svc.endpoint || svc.path || svc.url;
+      if (!path) continue;
+      candidates.push({
+        path,
+        method: svc.method || 'GET',
+        body: null,
+        source: '/health',
+        rawPrice: svc.price || svc.x402Price || '',
+        network: svc.network || '',
+        asset: svc.asset || '',
+        label: svc.name || svc.id || '',
+        description: svc.description || '',
+      });
     }
-  }
 
-  // HTML scraping with regex
-  const endpointPatterns = [
-    /['"](\/[a-zA-Z0-9_\-\/\.]+)['"]/g,
-    /\[([^\]]+)\]\((\/[a-zA-Z0-9_\-\/\.]+)\)/g,
-    /href="(\/[a-zA-Z0-9_\-\/\.]+)"/g,
-  ];
-
-  const textBlocks = pageHtml.split(/<[^>]+>/).filter(Boolean);
-  for (const block of textBlocks) {
-    if (!containsX402Keywords(block)) continue;
-
-    for (const pattern of endpointPatterns) {
-      let match;
-      while ((match = pattern.exec(block)) !== null) {
-        const path = match[2] || match[1];
-        if (path && path.startsWith('/') && path.length > 1) {
-          candidates.push({
-            path,
-            method: 'GET',
-            body: null,
-            source: pageUrl,
-            rawPrice: '',
-            network: '',
-            asset: '',
-            description: '',
-          });
-        }
-      }
-    }
-  }
-
-  // Deduplicate
-  const unique = [];
-  const seen = new Set();
-  for (const cand of candidates) {
-    const key = `${cand.path}::${cand.method}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(cand);
-    }
-  }
-
-  return unique;
-}
-
-// ========== PHASE 3: SCANNER ==========
-async function checkEndpoint(base, candidate, timeout) {
-  const { path, method = 'GET', body = null } = candidate;
-  const url = `https://${base}${path}`;
-  const start = Date.now();
-  
-  const options = {
-    method,
-    timeout: { request: timeout },
-    throwHttpErrors: false,
-    retry: { limit: 0 },
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': '*/*'
-    }
-  };
-
-  if (method === 'POST' && body) {
-    options.json = body;
-  }
-
-  // First attempt
-  let response = await got(url, options);
-  let httpStatus = response.statusCode;
-  let responseTime = Date.now() - start;
-
-  // If not 402, check if it's a 400 asking for parameters
-  if (httpStatus !== 402) {
-    try {
-      const errorBody = JSON.parse(response.body);
-      if (httpStatus === 400 && errorBody.required_params && Array.isArray(errorBody.required_params)) {
-        console.log(`[RETRY] 400 with required params for ${path}, retrying with dummy body`);
-        
-        // Build dummy body from required_params
-        const dummyBody = {};
-        for (const param of errorBody.required_params) {
-          dummyBody[param] = '0x0';
-        }
-
-        const retryOptions = {
-          method: 'POST',
-          timeout: { request: timeout },
-          throwHttpErrors: false,
-          retry: { limit: 0 },
-          headers: {
-            'User-Agent': 'Mozilla/5.0',
-            'Accept': '*/*',
-            'Content-Type': 'application/json'
-          },
-          json: dummyBody
-        };
-
-        const retryStart = Date.now();
-        response = await got(url, retryOptions);
-        httpStatus = response.statusCode;
-        responseTime = Date.now() - retryStart;
-      }
-    } catch (parseErr) {
-      // Not JSON, ignore and continue with original response
-    }
-  }
-
-  // If still not 402 after retry, log and return null
-  if (httpStatus !== 402) {
-    console.log(`[DEBUG] Non-402 body (first 200 chars): ${response.body?.slice(0, 200)}`);
+    return candidates.length > 0 ? candidates : null;
+  } catch (err) {
+    console.log(`[HEALTH] Error: ${err.message}`);
     return null;
   }
+}
 
-  // Process 402 response (same as before)
+// ========== ENDPOINT VERIFICATION ==========
+
+async function checkEndpoint(base, candidate, timeout) {
+  const { path, method = 'GET' } = candidate;
+  const url = `https://${base}${path}`;
+  const start = Date.now();
+
   try {
-    const responseBody = JSON.parse(response.body);
-    if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
-      const offer = responseBody.accepts[0];
-      
-      const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
-      const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
+    const response = await got(url, {
+      method,
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': '*/*'
+      }
+    });
+    const httpStatus = response.statusCode;
+    const responseTime = Date.now() - start;
 
+    // If we got 402, parse the payment details
+    if (httpStatus === 402) {
+      try {
+        const responseBody = JSON.parse(response.body);
+        if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
+          const offer = responseBody.accepts[0];
+          const rawAmount = offer.maxAmountRequired || offer.amount || candidate.rawPrice || '';
+          const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
+
+          return {
+            domain: base,
+            path,
+            status: 'success',
+            x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
+            price: rawAmount,
+            priceReadable: priceReadable,
+            network: offer.network || candidate.network || '',
+            asset: offer.asset || candidate.asset || '',
+            payTo: offer.payTo || '',
+            label: offer.label || candidate.label || '',
+            description: offer.description || candidate.description || '',
+            httpStatus: String(httpStatus),
+            responseTimeMs: String(responseTime),
+            errorMessage: '',
+            timestamp: new Date().toISOString(),
+          };
+        }
+      } catch (err) {
+        // 402 but invalid JSON
+      }
+    }
+
+    // If not 402, but we have metadata from discovery, report as public_info
+    if (candidate.rawPrice || candidate.network || candidate.asset) {
       return {
         domain: base,
         path,
-        status: 'success',
-        x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-        price: rawAmount,
-        priceReadable: priceReadable,
-        network: offer.network || candidate.network || '',
-        asset: offer.asset || candidate.asset || '',
-        payTo: offer.payTo || '',
-        label: offer.label || candidate.description || '',
-        description: offer.description || candidate.description || '',
+        status: 'public_info',
+        x402Version: '',
+        price: candidate.rawPrice || '',
+        priceReadable: candidate.rawPrice ? `$${(parseInt(candidate.rawPrice, 10) / 1000000).toFixed(6)}` : '',
+        network: candidate.network || '',
+        asset: candidate.asset || '',
+        payTo: '',
+        label: candidate.label || '',
+        description: candidate.description || '',
         httpStatus: String(httpStatus),
         responseTimeMs: String(responseTime),
         errorMessage: '',
         timestamp: new Date().toISOString(),
       };
-    } else {
-      return {
-        domain: base,
-        path,
-        status: 'error',
-        x402Version: responseBody.x402Version !== undefined ? String(responseBody.x402Version) : '',
-        price: '',
-        priceReadable: '',
-        network: '',
-        asset: '',
-        payTo: '',
-        label: '',
-        description: '',
-        httpStatus: String(httpStatus),
-        responseTimeMs: String(responseTime),
-        errorMessage: 'Missing accepts array in 402 response',
-        timestamp: new Date().toISOString(),
-      };
     }
-  } catch (parseErr) {
-    return {
-      domain: base,
-      path,
-      status: 'error',
-      x402Version: '',
-      price: '',
-      priceReadable: '',
-      network: '',
-      asset: '',
-      payTo: '',
-      label: '',
-      description: '',
-      httpStatus: String(httpStatus),
-      responseTimeMs: String(responseTime),
-      errorMessage: 'Invalid JSON in 402 body',
-      timestamp: new Date().toISOString(),
-    };
+
+    // Nothing found
+    return null;
+  } catch (err) {
+    console.log(`[CHECK] ${method} ${url} → ${err.message}`);
+    return null;
   }
 }
 
@@ -556,51 +437,24 @@ for (const base of targetDomains) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
     scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
-    console.log(`[HYBRID] Starting discovery for ${base}`);
+    console.log(`[DISCOVERY] Starting for ${base}`);
 
-    // --- PRIORITY 1: Direct JSON endpoints (health, openapi.json) ---
-    let candidates = await discoverFromHealthEndpoint(base, timeout);
+    // Try public well-known endpoints in order
+    let candidates = await discoverFromWellKnownAgent(base, timeout);
+    if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
+    if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
     if (candidates && candidates.length > 0) {
       scanList = candidates;
-      console.log(`[HEALTH/OPENAPI] Found ${candidates.length} endpoints`);
+      console.log(`[DISCOVERY] Found ${candidates.length} endpoints via public sources`);
     } else {
-      // --- PRIORITY 2: Crawl documentation ---
-      const docPages = await crawlDocumentation(base, timeout);
-      console.log(`[CRAWL] Crawled ${docPages.length} relevant pages`);
-
-      const candidateEndpoints = [];
-      for (const pageUrl of docPages) {
-        try {
-          const resp = await got(pageUrl, {
-            method: 'GET',
-            timeout: { request: timeout },
-            throwHttpErrors: false,
-            retry: { limit: 0 },
-          });
-          if (resp.statusCode === 200) {
-            const candidates = extractEndpointCandidates(resp.body, pageUrl);
-            candidateEndpoints.push(...candidates);
-            console.log(`[SCRAPE] Extracted ${candidates.length} candidates from ${pageUrl}`);
-          }
-        } catch (err) {
-          console.log(`[SCRAPE ERROR] ${pageUrl}: ${err.message}`);
-        }
-      }
-
-      if (candidateEndpoints.length > 0) {
-        scanList = candidateEndpoints;
-        console.log(`[CRAWL+SCRAPE] Total candidates: ${scanList.length}`);
-      } else {
-        // --- PRIORITY 3: Dictionary fallback ---
-        console.log('[FALLBACK] Using built-in dictionary');
-        scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
-          path: p,
-          method: 'GET',
-          body: null,
-        }));
-      }
+      console.log('[DISCOVERY] No public sources found, falling back to dictionary');
+      scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
+        path: p,
+        method: 'GET',
+        body: null,
+      }));
     }
   }
 
@@ -628,6 +482,6 @@ const finalOutput = results.map(row => ({
 }));
 
 await Actor.pushData(finalOutput);
-console.log(`Scan complete. ${finalOutput.length} endpoints found. Success: ${finalOutput.filter(r => r.status === 'success').length}, Errors: ${finalOutput.filter(r => r.status === 'error').length}`);
+console.log(`Scan complete. ${finalOutput.length} endpoints found. Public info: ${finalOutput.filter(r => r.status === 'public_info').length}, Verified 402: ${finalOutput.filter(r => r.status === 'success').length}`);
 
 await Actor.exit();
