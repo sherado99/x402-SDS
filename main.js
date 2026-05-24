@@ -302,7 +302,7 @@ async function discoverFromHealth(base, timeout) {
     const candidates = [];
 
     // Sentinel style: data.endpoints adalah OBJECT, bukan array
-    if (data.endpoints && typeof data.endpoints === 'object') {
+    if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
       for (const [path, info] of Object.entries(data.endpoints)) {
         if (!path) continue;
         
@@ -369,6 +369,7 @@ async function discoverFromHealth(base, timeout) {
     return null;
   }
 }
+
 // ========== ENDPOINT VERIFICATION ==========
 
 async function checkEndpoint(base, candidate, timeout) {
