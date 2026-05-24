@@ -120,8 +120,7 @@ const {
 if (!domain) {
   await Actor.fail('Domain is required. Please provide a root domain to scan.');
   await Actor.exit();
-  return; // tidak perlu, tapi aman
-}
+  }
 // Determine paths to scan
 let pathsToCheck = [];
 if (manualPaths && manualPaths.trim()) {
