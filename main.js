@@ -134,7 +134,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return baseUrl;
 }
 
-// ========== PUBLIC INFORMATION DISCOVERY ==========
+// ========== DETERMINISTIC DISCOVERY ==========
 
 async function discoverFromWellKnownAgent(base, timeout) {
   const paths = [
@@ -301,11 +301,8 @@ async function discoverFromHealth(base, timeout) {
 
     // Sentinel style: data.endpoints adalah OBJECT, bukan array
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
-      console.log(`[DEBUG-HEALTH] OBJECT endpoints with ${Object.keys(data.endpoints).length} keys`);
-
       for (const [path, info] of Object.entries(data.endpoints)) {
         if (!path) continue;
-        console.log(`[DEBUG-HEALTH] Key: ${path}, value type: ${typeof info}, price: ${info.price}`);
 
         let rawPrice = '';
         const network = data.network || '';
@@ -321,8 +318,6 @@ async function discoverFromHealth(base, timeout) {
         } else if (typeof info.price === 'number') {
           rawPrice = String(info.price);
         }
-
-        console.log(`[DEBUG-HEALTH] Extracted rawPrice for ${path}: "${rawPrice}"`);
 
         candidates.push({
           path,
@@ -340,7 +335,6 @@ async function discoverFromHealth(base, timeout) {
 
     // Fallback: jika endpoints adalah array
     if (Array.isArray(data.endpoints)) {
-      console.log(`[DEBUG-HEALTH] ARRAY endpoints with ${data.endpoints.length} items`);
       for (const svc of data.endpoints) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
@@ -358,23 +352,96 @@ async function discoverFromHealth(base, timeout) {
       }
     }
 
-    // ========== HARDCODED FALLBACK untuk sentinel ==========
-    // Jika rawPrice pertama masih kosong, gunakan hardcode
-    if (candidates.length > 0 && (!candidates[0].rawPrice || candidates[0].rawPrice === '')) {
-      console.log('[DEBUG-HEALTH] WARNING: rawPrice empty, using hardcoded fallback');
-      return [
-        { path: '/verify/protocol', method: 'GET', body: null, source: '/health', rawPrice: '8000', network: 'base', asset: '', label: 'Protocol trust verification', description: 'Assess smart contract trustworthiness' },
-        { path: '/verify/token', method: 'GET', body: null, source: '/health', rawPrice: '5000', network: 'base', asset: '', label: 'Token legitimacy check', description: 'Check token legitimacy and safety' },
-        { path: '/verify/position', method: 'GET', body: null, source: '/health', rawPrice: '5000', network: 'base', asset: '', label: 'Position risk analysis', description: 'Analyze DeFi position risk' },
-        { path: '/verify/counterparty', method: 'GET', body: null, source: '/health', rawPrice: '10000', network: 'base', asset: '', label: 'Counterparty intelligence', description: 'Assess counterparty wallet safety' },
-        { path: '/preflight', method: 'GET', body: null, source: '/health', rawPrice: '25000', network: 'base', asset: '', label: 'Unified pre-transaction safety', description: 'Unified pre-transaction safety check' },
-      ];
-    }
-
-    console.log(`[DEBUG-HEALTH] Returning ${candidates.length} candidates`);
     return candidates.length > 0 ? candidates : null;
   } catch (err) {
     console.log(`[HEALTH] Error: ${err.message}`);
+    return null;
+  }
+}
+
+// ========== AI DISCOVERY via SDS ==========
+
+function filterRelevantContent(rawContent) {
+  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts'];
+  const lowerContent = rawContent.toLowerCase();
+  const hasKeyword = keywords.some(kw => lowerContent.includes(kw));
+  if (!hasKeyword) return null;
+
+  if (rawContent.length <= 3000) return rawContent;
+
+  // Potong dengan cerdas: ambil baris yang mengandung keyword
+  const lines = rawContent.split('\n');
+  const relevantLines = lines.filter(line => {
+    const lowerLine = line.toLowerCase();
+    return keywords.some(kw => lowerLine.includes(kw));
+  });
+  return relevantLines.join('\n').substring(0, 3000);
+}
+
+async function discoverWithAI(domain, base, timeout) {
+  const discoveryUrls = [
+    `https://${base}/.well-known/agent-card.json`,
+    `https://${base}/.well-known/agent.json`,
+    `https://${base}/.well-known/x402`,
+    `https://${base}/openapi.json`,
+    `https://${base}/health`,
+  ];
+
+  let combinedContent = '';
+
+  for (const url of discoveryUrls) {
+    try {
+      const response = await got(url, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode === 200) {
+        const filtered = filterRelevantContent(response.body);
+        if (filtered) {
+          combinedContent += `\n--- From ${url} ---\n${filtered}`;
+          console.log(`[AI-DISCOVERY] Filtered content from ${url}: ${filtered.length} chars`);
+        }
+      }
+    } catch (err) {
+      console.log(`[AI-DISCOVERY] Fetch error ${url}: ${err.message}`);
+    }
+  }
+
+  if (!combinedContent.trim()) {
+    console.log('[AI-DISCOVERY] No relevant content found for AI');
+    return null;
+  }
+
+  try {
+    const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
+      json: { content: combinedContent },
+      timeout: { request: 30000 },
+      throwHttpErrors: false,
+    });
+
+    if (sdsResponse.statusCode !== 200) {
+      console.log(`[AI-DISCOVERY] SDS returned ${sdsResponse.statusCode}`);
+      return null;
+    }
+
+    const endpoints = JSON.parse(sdsResponse.body);
+    console.log(`[AI-DISCOVERY] SDS extracted ${endpoints.length} endpoints`);
+
+    return endpoints.map(ep => ({
+      path: ep.path,
+      method: ep.method || 'GET',
+      body: null,
+      source: 'sds-ai',
+      rawPrice: String(Math.round((ep.price || 0) * 1000000)),
+      network: ep.network || '',
+      asset: ep.asset || '',
+      label: ep.label || ep.path,
+      description: ep.description || '',
+    }));
+  } catch (err) {
+    console.log(`[AI-DISCOVERY] SDS call failed: ${err.message}`);
     return null;
   }
 }
@@ -496,17 +563,23 @@ for (const base of targetDomains) {
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
 
-    // Coba well-known endpoints secara berurutan
+    // PRIORITAS 1: Deterministic discovery
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
+    // PRIORITAS 2: AI Discovery via SDS (jika deterministik gagal)
+    if (!candidates) {
+      console.log('[DISCOVERY] Deterministic failed, trying AI via SDS');
+      candidates = await discoverWithAI(domain, base, timeout);
+    }
+
     if (candidates && candidates.length > 0) {
       scanList = candidates;
-      console.log(`[DISCOVERY] Found ${candidates.length} endpoints via public sources`);
+      console.log(`[DISCOVERY] Found ${candidates.length} endpoints`);
     } else {
-      console.log('[DISCOVERY] No public sources found, falling back to dictionary');
+      console.log('[DISCOVERY] No endpoints found, falling back to dictionary');
       scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
         path: p,
         method: 'GET',
