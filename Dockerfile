@@ -1,2 +1,3 @@
 FROM apify/actor-node-puppeteer-chrome:latest
-COPY main.js /usr/src/app/main.js
+RUN rm -f /home/apify/main.js
+COPY main.js /home/apify/main.js
