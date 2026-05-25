@@ -10,4 +10,16 @@
   "/api/x402/payment",
   "/v1/x402",
   "/.well-known/x402"
+  "/mcp",
+  "/mcp/tools",
+  "/mcp/status",
+  "/openapi.json",
+  "/swagger.json",
+  "/v1/chat/completions",
+  "/v1/embeddings",
+  "/api/search",
+  "/api/generate",
+  "/api/inference",
+  "/.well-known/ai-plugin.json",
+  "/.well-known/openapi.json"
 ]
