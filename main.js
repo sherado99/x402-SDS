@@ -136,6 +136,51 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DETERMINISTIC DISCOVERY ==========
 
+async function discoverFromWellKnownAgent(base, timeout) {
+  const paths = [
+    '/.well-known/agent-card.json',
+    '/.well-known/agent.json',
+    '/.well-known/agent-services.json',
+  ];
+
+  for (const wkPath of paths) {
+    try {
+      const response = await got(`https://${base}${wkPath}`, {
+        method: 'GET',
+        timeout: { request: timeout },
+        throwHttpErrors: false,
+        retry: { limit: 0 },
+      });
+      if (response.statusCode !== 200) continue;
+
+      const data = JSON.parse(response.body);
+      const candidates = [];
+
+      const services = data.skills || data.services || data.endpoints || [];
+      for (const svc of services) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+        candidates.push({
+          path,
+          method: svc.method || 'GET',
+          body: null,
+          source: wkPath,
+          rawPrice: String(svc.price || svc.cost || ''),
+          network: svc.network || '',
+          asset: svc.asset || '',
+          label: svc.name || svc.id || '',
+          description: svc.description || '',
+        });
+      }
+
+      if (candidates.length > 0) return candidates;
+    } catch (err) {
+      console.log(`[AGENT-CARD] ${wkPath} error: ${err.message}`);
+    }
+  }
+  return null;
+}
+
 async function discoverFromWellKnownX402(base, timeout) {
   try {
     const response = await got(`https://${base}/.well-known/x402`, {
@@ -149,32 +194,21 @@ async function discoverFromWellKnownX402(base, timeout) {
     const data = JSON.parse(response.body);
     const candidates = [];
 
-    // Helper untuk ekstrak harga dari berbagai format
     const extractPrice = (pricing) => {
       if (!pricing) return '';
-      
-      // Format standar: { price: 0.008 }
       if (typeof pricing.price === 'number') return String(Math.round(pricing.price * 1000000));
       if (typeof pricing.price === 'string') {
         const match = pricing.price.match(/\$?([\d.]+)/);
         if (match) return String(Math.round(parseFloat(match[1]) * 1000000));
       }
-      
-      // Format blockrun: pricePerSource
       if (typeof pricing.pricePerSource === 'number') return String(Math.round(pricing.pricePerSource * 1000000));
-      
-      // Format LLM: inputPerMillionTokens (ambil yang terkecil sebagai representasi)
       if (typeof pricing.inputPerMillionTokens === 'number') return String(Math.round(pricing.inputPerMillionTokens * 1000000));
-      
-      // Format lain
       if (typeof pricing.pricePerCall === 'number') return String(Math.round(pricing.pricePerCall * 1000000));
       if (typeof pricing.perRequest === 'number') return String(Math.round(pricing.perRequest * 1000000));
       if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1000000));
-      
       return '';
     };
 
-    // 1. resources array of objects
     if (data.resources && Array.isArray(data.resources)) {
       for (const res of data.resources) {
         if (typeof res === 'object' && res.path) {
@@ -208,7 +242,6 @@ async function discoverFromWellKnownX402(base, timeout) {
       }
     }
 
-    // 2. resourceDetails array
     if (data.resourceDetails && Array.isArray(data.resourceDetails)) {
       for (const detail of data.resourceDetails) {
         if (detail.path || detail.endpoint) {
@@ -227,19 +260,15 @@ async function discoverFromWellKnownX402(base, timeout) {
       }
     }
 
-    // 3. services array (blockrun style)
     if (data.services && Array.isArray(data.services)) {
       for (const svc of data.services) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
 
         let rawPrice = '';
-        
-        // Cek pricing di level service
         const svcPricing = svc.pricing || svc.price || {};
         rawPrice = extractPrice(svcPricing);
         
-        // Kalau tidak ada, coba ambil dari model pertama (untuk LLM)
         if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) {
           const firstModel = svc.models[0];
           const modelPricing = firstModel.pricing || firstModel.price || {};
@@ -262,7 +291,6 @@ async function discoverFromWellKnownX402(base, timeout) {
       }
     }
 
-    // Deduplicate
     const unique = [];
     const seen = new Set();
     for (const c of candidates) {
@@ -442,7 +470,6 @@ function filterRelevantContent(rawContent, maxLength = 6000) {
 
 async function discoverWithAI(domain, base, timeout) {
   try {
-    // Ambil well-known/x402
     const wkResponse = await got(`https://${base}/.well-known/x402`, {
       method: 'GET',
       timeout: { request: timeout },
@@ -458,13 +485,10 @@ async function discoverWithAI(domain, base, timeout) {
     const data = JSON.parse(wkResponse.body);
     let contentToSend = '';
 
-    // Jika ada services array, kirim hanya itu (targeted)
     if (data.services && Array.isArray(data.services)) {
       contentToSend = JSON.stringify(data.services);
       console.log(`[AI-DISCOVERY] Sending services array: ${contentToSend.length} chars`);
-    }
-    // Jika tidak, fallback ke konten biasa
-    else {
+    } else {
       const discoveryUrls = [
         `https://${base}/.well-known/agent-card.json`,
         `https://${base}/.well-known/agent.json`,
@@ -482,7 +506,9 @@ async function discoverWithAI(domain, base, timeout) {
               contentToSend += `\n--- From ${url} ---\n${filtered}`;
             }
           }
-        } catch (err) {}
+        } catch (err) {
+          // skip
+        }
       }
     }
 
@@ -491,7 +517,6 @@ async function discoverWithAI(domain, base, timeout) {
       return null;
     }
 
-    // Batasi ke 15000 karakter untuk SDS
     const finalContent = contentToSend.substring(0, 15000);
 
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
@@ -521,38 +546,6 @@ async function discoverWithAI(domain, base, timeout) {
     }));
   } catch (err) {
     console.log(`[AI-DISCOVERY] Error: ${err.message}`);
-    return null;
-  }
-}
-
-  try {
-    const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
-      json: { content: combinedContent },
-      timeout: { request: 30000 },
-      throwHttpErrors: false,
-    });
-
-    if (sdsResponse.statusCode !== 200) {
-      console.log(`[AI-DISCOVERY] SDS returned ${sdsResponse.statusCode}`);
-      return null;
-    }
-
-    const endpoints = JSON.parse(sdsResponse.body);
-    console.log(`[AI-DISCOVERY] SDS extracted ${endpoints.length} endpoints`);
-
-    return endpoints.map(ep => ({
-      path: ep.path,
-      method: ep.method || 'GET',
-      body: null,
-      source: 'sds-ai',
-      rawPrice: String(Math.round((ep.price || 0) * 1000000)),
-      network: ep.network || '',
-      asset: ep.asset || '',
-      label: ep.label || ep.path,
-      description: ep.description || '',
-    }));
-  } catch (err) {
-    console.log(`[AI-DISCOVERY] SDS call failed: ${err.message}`);
     return null;
   }
 }
@@ -672,7 +665,6 @@ for (const base of targetDomains) {
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
 
-    // Deterministic discovery
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
@@ -691,7 +683,6 @@ for (const base of targetDomains) {
       }
     }
 
-    // AI Discovery via SDS
     if (!candidates) {
       if (!useAIFallback) {
         console.log('[DISCOVERY] Deterministic failed, trying AI via SDS');
@@ -703,7 +694,6 @@ for (const base of targetDomains) {
       }
     }
 
-    // Dictionary fallback
     if (!candidates || candidates.length === 0) {
       console.log('[DISCOVERY] No endpoints found, falling back to dictionary');
       scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
