@@ -569,16 +569,35 @@ for (const base of targetDomains) {
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
-    // PRIORITAS 2: AI Discovery via SDS (jika deterministik gagal)
-    if (!candidates) {
-      console.log('[DISCOVERY] Deterministic failed, trying AI via SDS');
-      candidates = await discoverWithAI(domain, base, timeout);
+    // === STRATEGI FINAL: VALIDASI HARGA ===
+    // Jika kandidat deterministik ada, tapi harga tidak valid → fallback ke AI
+    let useAIFallback = false;
+    if (candidates && candidates.length > 0) {
+      const firstRawPrice = candidates[0].rawPrice;
+      if (!firstRawPrice || typeof firstRawPrice !== 'string' || firstRawPrice === '' || firstRawPrice === '[object Object]') {
+        console.log('[DISCOVERY] Deterministic candidates have invalid price. Falling back to AI via SDS.');
+        useAIFallback = true;
+        candidates = null; // Reset candidates agar AI dipicu
+      } else {
+        console.log(`[DISCOVERY] Deterministic found ${candidates.length} valid endpoints`);
+        scanList = candidates;
+      }
     }
 
-    if (candidates && candidates.length > 0) {
-      scanList = candidates;
-      console.log(`[DISCOVERY] Found ${candidates.length} endpoints`);
-    } else {
+    // PRIORITAS 2: AI Discovery via SDS (jika deterministik gagal atau harga tidak valid)
+    if (!candidates) {
+      if (!useAIFallback) {
+        console.log('[DISCOVERY] Deterministic failed, trying AI via SDS');
+      }
+      candidates = await discoverWithAI(domain, base, timeout);
+      if (candidates && candidates.length > 0) {
+        scanList = candidates;
+        console.log(`[DISCOVERY] AI found ${candidates.length} endpoints`);
+      }
+    }
+
+    // Jika setelah AI juga tidak ada, fallback ke dictionary
+    if (!candidates || candidates.length === 0) {
       console.log('[DISCOVERY] No endpoints found, falling back to dictionary');
       scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({
         path: p,
