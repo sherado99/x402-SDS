@@ -483,11 +483,17 @@ async function discoverWithAI(domain, base, timeout) {
     }
 
     const data = JSON.parse(wkResponse.body);
-    let contentToSend = '';
+    let finalContent = '';
 
     if (data.services && Array.isArray(data.services)) {
-      contentToSend = JSON.stringify(data.services);
-      console.log(`[AI-DISCOVERY] Sending services array: ${contentToSend.length} chars`);
+      // Untuk array services yang besar, ambil hanya 10 pertama
+      let servicesToSend = data.services;
+      if (servicesToSend.length > 10) {
+        servicesToSend = servicesToSend.slice(0, 10);
+        console.log(`[AI-DISCOVERY] Trimmed services from ${data.services.length} to 10`);
+      }
+      finalContent = JSON.stringify(servicesToSend);
+      console.log(`[AI-DISCOVERY] Sending services array: ${finalContent.length} chars`);
     } else {
       const discoveryUrls = [
         `https://${base}/.well-known/agent-card.json`,
@@ -497,31 +503,32 @@ async function discoverWithAI(domain, base, timeout) {
         `https://${base}/health`,
       ];
 
+      let combinedContent = '';
       for (const url of discoveryUrls) {
         try {
           const resp = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
           if (resp.statusCode === 200) {
             const filtered = filterRelevantContent(resp.body, 6000);
             if (filtered) {
-              contentToSend += `\n--- From ${url} ---\n${filtered}`;
+              combinedContent += `\n--- From ${url} ---\n${filtered}`;
             }
           }
         } catch (err) {
           // skip
         }
       }
+      finalContent = combinedContent.substring(0, 15000);
     }
 
-    if (!contentToSend.trim()) {
+    if (!finalContent.trim()) {
       console.log('[AI-DISCOVERY] No content to send to AI');
       return null;
     }
 
-    const finalContent = contentToSend.substring(0, 15000);
-
+    // Naikkan timeout menjadi 60 detik untuk konten besar
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
       json: { content: finalContent },
-      timeout: { request: 30000 },
+      timeout: { request: 60000 },
       throwHttpErrors: false,
     });
 
