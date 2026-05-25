@@ -1,4 +1,10 @@
-I'mimport { Actor } from 'apify'; import { CheerioCrawler } from 'crawlee'; import got from 'got'; import crypto from 'crypto'; import fs from 'fs/promises'; import { Document, Packer, Paragraph, HeadingLevel } from 'docx'; import PDFDocument from 'pdfkit';
+import { Actor } from 'apify';
+import { CheerioCrawler } from 'crawlee';
+import got from 'got';
+import crypto from 'crypto';
+import fs from 'fs/promises';
+import { Document, Packer, Paragraph, HeadingLevel } from 'docx';
+import PDFDocument from 'pdfkit';
 
 await Actor.init();
 
