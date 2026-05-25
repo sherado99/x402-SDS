@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { CheerioCrawler, PuppeteerCrawler, RequestQueue } from 'crawlee';
+import { CheerioCrawler } from 'crawlee';
 import got from 'got';
 import crypto from 'crypto';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
@@ -169,34 +169,26 @@ async function discoverFromWellKnownX402(base, timeout) {
       if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1000000));
       return '';
     };
-
     if (data.resources && Array.isArray(data.resources)) {
       for (const res of data.resources) {
         if (typeof res === 'object' && res.path) {
           candidates.push({ path: res.path, method: res.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(res.pricing || res), network: res.network || data.network || '', asset: res.asset || data.asset || '', label: res.name || res.id || '', description: res.description || '' });
         } else if (typeof res === 'string') {
-          const parts = res.trim().split(' ');
-          const method = parts.length > 1 ? parts[0] : 'GET';
-          const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+          const parts = res.trim().split(' '); const method = parts.length > 1 ? parts[0] : 'GET'; const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
           candidates.push({ path, method, body: null, source: '/.well-known/x402', rawPrice: '', network: data.network || '', asset: data.asset || '', label: path, description: '' });
         }
       }
     }
     if (data.resourceDetails && Array.isArray(data.resourceDetails)) {
       for (const detail of data.resourceDetails) {
-        if (detail.path || detail.endpoint) {
-          candidates.push({ path: detail.path || detail.endpoint, method: detail.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(detail.pricing || detail), network: detail.network || data.network || '', asset: detail.asset || data.asset || '', label: detail.name || detail.label || detail.path || '', description: detail.description || '' });
-        }
+        if (detail.path || detail.endpoint) candidates.push({ path: detail.path || detail.endpoint, method: detail.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(detail.pricing || detail), network: detail.network || data.network || '', asset: detail.asset || data.asset || '', label: detail.name || detail.label || detail.path || '', description: detail.description || '' });
       }
     }
     if (data.services && Array.isArray(data.services)) {
       for (const svc of data.services) {
-        const path = svc.endpoint || svc.path || svc.url;
-        if (!path) continue;
+        const path = svc.endpoint || svc.path || svc.url; if (!path) continue;
         let rawPrice = extractPrice(svc.pricing || svc.price || {});
-        if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) {
-          rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
-        }
+        if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
         const payment = svc.payment || {};
         candidates.push({ path, method: svc.method || 'POST', body: null, source: '/.well-known/x402', rawPrice, network: payment.network || svc.network || data.network || '', asset: payment.asset || svc.asset || data.asset || '', label: svc.name || svc.id || svc.label || '', description: svc.description || '' });
       }
@@ -216,16 +208,12 @@ async function discoverFromOpenAPI(base, timeout) {
   for (const apiPath of openApiPaths) {
     try {
       const response = await got(`https://${base}${apiPath}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-      if (response.statusCode !== 200) {
-        await logFailure(base, `openapi:${apiPath}`, { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` });
-        continue;
-      }
+      if (response.statusCode !== 200) { await logFailure(base, `openapi:${apiPath}`, { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` }); continue; }
       const spec = JSON.parse(response.body);
       if (!spec.paths) continue;
       const candidates = [];
       for (const [path, methods] of Object.entries(spec.paths)) {
-        const method = Object.keys(methods)[0] || 'GET';
-        const operation = methods[method];
+        const method = Object.keys(methods)[0] || 'GET'; const operation = methods[method];
         let price = '', network = '', asset = '', description = '';
         if (operation['x-payment-info']) { const pi = operation['x-payment-info']; price = String(pi.price || pi.amount || ''); network = pi.network || ''; asset = pi.asset || pi.token || ''; description = pi.description || ''; }
         const resp402 = operation.responses?.['402'];
@@ -237,10 +225,7 @@ async function discoverFromOpenAPI(base, timeout) {
         candidates.push({ path, method: method.toUpperCase(), body: null, source: apiPath, rawPrice: price, network, asset, label: operation.summary || operation.operationId || '', description: description || operation.description || '' });
       }
       return candidates.length > 0 ? candidates : null;
-    } catch (err) {
-      console.log(`[OPENAPI] ${apiPath} error: ${err.message}`);
-      await logFailure(base, `openapi:${apiPath}`, { error: err.message, reason: 'Parse or network error' });
-    }
+    } catch (err) { console.log(`[OPENAPI] ${apiPath} error: ${err.message}`); await logFailure(base, `openapi:${apiPath}`, { error: err.message, reason: 'Parse or network error' }); }
   }
   return null;
 }
@@ -248,18 +233,14 @@ async function discoverFromOpenAPI(base, timeout) {
 async function discoverFromHealth(base, timeout) {
   try {
     const response = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-    if (response.statusCode !== 200) {
-      await logFailure(base, 'health', { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` });
-      return null;
-    }
+    if (response.statusCode !== 200) { await logFailure(base, 'health', { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` }); return null; }
     const data = JSON.parse(response.body);
     const candidates = [];
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
       for (const [path, info] of Object.entries(data.endpoints)) {
-        if (!path) continue;
-        let rawPrice = ''; const network = data.network || '';
-        if (typeof info.price === 'string') { const match = info.price.match(/\$([\d.]+)/); if (match) { rawPrice = String(Math.round(parseFloat(match[1]) * 1000000)); } else if (info.price === 'free' || info.price === '0') { rawPrice = '0'; } }
-        else if (typeof info.price === 'number') { rawPrice = String(info.price); }
+        if (!path) continue; let rawPrice = ''; const network = data.network || '';
+        if (typeof info.price === 'string') { const match = info.price.match(/\$([\d.]+)/); if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1000000)); else if (info.price === 'free' || info.price === '0') rawPrice = '0'; }
+        else if (typeof info.price === 'number') rawPrice = String(info.price);
         candidates.push({ path, method: 'GET', body: null, source: '/health', rawPrice, network, asset: '', label: info.description || path, description: info.description || '' });
       }
     }
@@ -270,11 +251,7 @@ async function discoverFromHealth(base, timeout) {
       }
     }
     return candidates.length > 0 ? candidates : null;
-  } catch (err) {
-    console.log(`[HEALTH] Error: ${err.message}`);
-    await logFailure(base, 'health', { error: err.message, reason: 'Parse or network error' });
-    return null;
-  }
+  } catch (err) { console.log(`[HEALTH] Error: ${err.message}`); await logFailure(base, 'health', { error: err.message, reason: 'Parse or network error' }); return null; }
 }
 
 // ========== SDS HELPER ==========
@@ -289,7 +266,6 @@ function applyEnrichment(candidates, aiEndpoints) {
   console.log(`[APPLY] Matching ${aiEndpoints.length} AI endpoints to ${candidates.length} candidates...`);
   console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
   console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
-
   for (const candidate of candidates) {
     const candPath = normalizePath(candidate.path);
     const match = aiEndpoints.find(ai => normalizePath(ai.path) === candPath);
@@ -306,6 +282,7 @@ function applyEnrichment(candidates, aiEndpoints) {
   }
 }
 
+// ========== ENRICHMENT ==========
 async function enrichCandidatesWithAI(candidates, base, timeout) {
   console.log('[ENRICH] Trying to enrich candidates...');
 
@@ -335,8 +312,8 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
     if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints);
   }
 
-  console.log('[ENRICH] Running JS-rendered scraper...');
-  const dynamicPages = await scrapeDynamicPages(base, timeout);
+  console.log('[ENRICH] Running JS-rendered scraper via Apify Web Scraper...');
+  const dynamicPages = await scrapeDynamicViaActor(base);
   if (dynamicPages.length > 0) {
     let combinedHTML = '';
     for (const page of dynamicPages) combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
@@ -348,7 +325,7 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   return candidates;
 }
 
-// ========== STATIC SCRAPER (Cheerio) ==========
+// ========== STATIC SCRAPER ==========
 async function scrapeStaticPages(base, timeout) {
   const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
   const discoveredHTML = new Set();
@@ -372,41 +349,42 @@ async function scrapeStaticPages(base, timeout) {
   return [...discoveredHTML];
 }
 
-// ========== DYNAMIC SCRAPER (Puppeteer with separate queue) ==========
-async function scrapeDynamicPages(base, timeout) {
-  // Queue khusus agar tidak bentrok dengan Cheerio
-  const safeName = base.replace(/\./g, '-');
-  const queue = await RequestQueue.open(`puppeteer-queue-${safeName}`);
+// ========== DYNAMIC SCRAPER VIA APIFY ACTOR ==========
+async function scrapeDynamicViaActor(base) {
   const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
-  for (const url of startUrls) await queue.addRequest({ url });
 
-  const discoveredHTML = new Set();
-  const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
-
-  const crawler = new PuppeteerCrawler({
-    requestQueue: queue,
-    maxRequestsPerCrawl: 10,
-    requestHandlerTimeoutSecs: 60,
-    launchContext: { launchOptions: { headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] } },
-    async requestHandler({ request, page, enqueueLinks }) {
-      console.log(`[DYNAMIC-SCRAPER] Navigating to: ${request.url}`);
-      await page.goto(request.url, { waitUntil: 'networkidle2', timeout: 30000 });
-      await page.waitForTimeout(2000); // extra buffer
-      const bodyText = await page.evaluate(() => document.body.innerText.toLowerCase());
-      const matched = keywords.filter(kw => bodyText.includes(kw));
-      if (matched.length > 0) {
+  try {
+    const run = await Actor.call('apify/web-scraper', {
+      startUrls: startUrls.map(url => ({ url })),
+      pageFunction: async ({ page }) => {
+        await page.waitForTimeout(3000);
         const html = await page.content();
-        discoveredHTML.add({ url: request.url, html });
-        console.log(`[DYNAMIC-SCRAPER] Found: ${request.url}`);
-        await enqueueLinks({ transformRequestFunction(req) { return req; } });
-      } else {
-        console.log(`[DYNAMIC-SCRAPER] No keywords matched on: ${request.url}`);
-        await logFailure(base, 'dynamic-scraper', { url: request.url, reason: 'No relevant keywords found in JS-rendered HTML', bodyPreview: bodyText.substring(0, 1000), missingKeywords: keywords.filter(kw => !bodyText.includes(kw)).join(', ') });
+        const text = await page.evaluate(() => document.body.innerText.toLowerCase());
+        const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
+        const matched = keywords.filter(kw => text.includes(kw));
+        if (matched.length > 0) {
+          return { url: page.url(), html, matched };
+        }
+        return null;
+      },
+      maxPagesPerCrawl: 10,
+      proxyConfiguration: { useApifyProxy: true },
+    });
+
+    const dataset = await Actor.openDataset(run.defaultDatasetId);
+    const items = await dataset.getData();
+    const pages = [];
+    for (const item of items.items) {
+      if (item && item.html && item.url) {
+        pages.push({ url: item.url, html: item.html });
+        console.log(`[DYNAMIC-SCRAPER] Found via Actor: ${item.url}`);
       }
-    },
-  });
-  await crawler.run();
-  return [...discoveredHTML];
+    }
+    return pages;
+  } catch (err) {
+    console.error(`[DYNAMIC-SCRAPER] Actor call failed: ${err.message}`);
+    return [];
+  }
 }
 
 // ========== DISCOVERY FALLBACKS ==========
@@ -420,7 +398,7 @@ async function discoverWithAI(domain, base, timeout) {
 
 async function discoverWithScraper(domain, base, timeout) {
   const staticPages = await scrapeStaticPages(base, timeout);
-  const dynamicPages = await scrapeDynamicPages(base, timeout);
+  const dynamicPages = await scrapeDynamicViaActor(base);
   const allPages = [...staticPages, ...dynamicPages];
   if (allPages.length === 0) return null;
   let combinedHTML = '';
