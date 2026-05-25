@@ -9,7 +9,7 @@
   "/api/x402/",
   "/api/x402/payment",
   "/v1/x402",
-  "/.well-known/x402"
+  "/.well-known/x402",
   "/mcp",
   "/mcp/tools",
   "/mcp/status",
