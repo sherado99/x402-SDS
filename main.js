@@ -192,24 +192,118 @@ async function discoverFromWellKnownX402(base, timeout) {
     if (response.statusCode !== 200) return null;
 
     const data = JSON.parse(response.body);
-    if (!data.resources || !Array.isArray(data.resources)) return null;
-
     const candidates = [];
-    for (const res of data.resources) {
-      if (!res.path) continue;
-      candidates.push({
-        path: res.path,
-        method: 'GET',
-        body: null,
-        source: '/.well-known/x402',
-        rawPrice: String(res.price || ''),
-        network: res.network || '',
-        asset: res.asset || '',
-        label: res.name || res.id || '',
-        description: res.description || '',
-      });
+
+    // Handle resources as array of objects
+    if (data.resources && Array.isArray(data.resources)) {
+      for (const res of data.resources) {
+        if (typeof res === 'object' && res.path) {
+          candidates.push({
+            path: res.path,
+            method: res.method || 'GET',
+            body: null,
+            source: '/.well-known/x402',
+            rawPrice: String(res.price || ''),
+            network: res.network || '',
+            asset: res.asset || '',
+            label: res.name || res.id || '',
+            description: res.description || '',
+          });
+        } else if (typeof res === 'string') {
+          // Handle "POST /path" format
+          const parts = res.trim().split(' ');
+          const method = parts.length > 1 ? parts[0] : 'GET';
+          const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+          candidates.push({
+            path,
+            method,
+            body: null,
+            source: '/.well-known/x402',
+            rawPrice: '',
+            network: data.network || '',
+            asset: data.asset || '',
+            label: path,
+            description: '',
+          });
+        }
+      }
     }
-    return candidates.length > 0 ? candidates : null;
+
+    // Handle resourceDetails as array of objects (deepbluebase style)
+    if (data.resourceDetails && Array.isArray(data.resourceDetails)) {
+      for (const detail of data.resourceDetails) {
+        if (detail.path || detail.endpoint) {
+          candidates.push({
+            path: detail.path || detail.endpoint,
+            method: detail.method || 'GET',
+            body: null,
+            source: '/.well-known/x402',
+            rawPrice: String(detail.price || ''),
+            network: detail.network || data.network || '',
+            asset: detail.asset || data.asset || '',
+            label: detail.name || detail.label || detail.path || '',
+            description: detail.description || '',
+          });
+        }
+      }
+    }
+
+    // Handle services array (blockrun style)
+    if (data.services && Array.isArray(data.services)) {
+      for (const svc of data.services) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+
+        // Extract price from various pricing structures
+        let rawPrice = '';
+        const pricing = svc.pricing || svc.price || {};
+        const payment = svc.payment || {};
+
+        // Try multiple pricing fields
+        if (typeof svc.price === 'number') {
+          rawPrice = String(Math.round(svc.price * 1000000));
+        } else if (typeof svc.price === 'string') {
+          const match = svc.price.match(/\$?([\d.]+)/);
+          if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1000000));
+        } else if (pricing.pricePerSource) {
+          rawPrice = String(Math.round(pricing.pricePerSource * 1000000));
+        } else if (pricing.inputPerMillionTokens) {
+          // For LLM models, use input token price as representative
+          rawPrice = String(Math.round(pricing.inputPerMillionTokens * 1000000));
+        } else if (pricing.pricePerCall) {
+          rawPrice = String(Math.round(pricing.pricePerCall * 1000000));
+        }
+
+        const network = payment.network || svc.network || data.network || '';
+        const asset = payment.asset || svc.asset || data.asset || '';
+        const payTo = payment.address || payment.payTo || '';
+
+        candidates.push({
+          path,
+          method: svc.method || 'POST',
+          body: null,
+          source: '/.well-known/x402',
+          rawPrice,
+          network,
+          asset,
+          label: svc.name || svc.id || svc.label || '',
+          description: svc.description || '',
+        });
+      }
+    }
+
+    // Deduplicate by path+method
+    const unique = [];
+    const seen = new Set();
+    for (const c of candidates) {
+      const key = `${c.path}|${c.method}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        unique.push(c);
+      }
+    }
+
+    return unique.length > 0 ? unique : null;
   } catch (err) {
     console.log(`[WELL-KNOWN-X402] Error: ${err.message}`);
     return null;
@@ -363,20 +457,20 @@ async function discoverFromHealth(base, timeout) {
 // ========== AI DISCOVERY via SDS ==========
 
 function filterRelevantContent(rawContent) {
-  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts'];
+  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts', 'service'];
   const lowerContent = rawContent.toLowerCase();
   const hasKeyword = keywords.some(kw => lowerContent.includes(kw));
   if (!hasKeyword) return null;
 
-  if (rawContent.length <= 3000) return rawContent;
+  // Tingkatkan batas ke 6000 untuk menangkap services array
+  if (rawContent.length <= 6000) return rawContent;
 
-  // Potong dengan cerdas: ambil baris yang mengandung keyword
   const lines = rawContent.split('\n');
   const relevantLines = lines.filter(line => {
     const lowerLine = line.toLowerCase();
     return keywords.some(kw => lowerLine.includes(kw));
   });
-  return relevantLines.join('\n').substring(0, 3000);
+  return relevantLines.join('\n').substring(0, 6000);
 }
 
 async function discoverWithAI(domain, base, timeout) {
