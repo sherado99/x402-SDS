@@ -234,12 +234,32 @@ async function discoverFromHealth(base, timeout) {
 // ========== AI DISCOVERY via SDS (umum) ==========
 
 function filterRelevantContent(rawContent, maxLength = 6000) {
-  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts', 'service', 'model'];
+  // Tiga kata kunci: nama/deskripsi, path, harga
+  const nameKeywords = ['service', 'agent', 'api', 'endpoint', 'description', 'label', 'name'];
+  const pathKeywords = ['/api/', '/v1/', '/x402/', '/verify/', '/proxy/', '/summarize', '/translate', 'path', 'endpoint', 'url'];
+  const priceKeywords = ['$0.', '$1.', 'usdc', 'price', 'pricing', 'amount', 'free'];
+
   const lowerContent = rawContent.toLowerCase();
-  if (!keywords.some(kw => lowerContent.includes(kw))) return null;
+  
+  // Cek apakah setidaknya dua dari tiga kategori muncul
+  const hasName = nameKeywords.some(kw => lowerContent.includes(kw));
+  const hasPath = pathKeywords.some(kw => lowerContent.includes(kw));
+  const hasPrice = priceKeywords.some(kw => lowerContent.includes(kw));
+
+  if (!hasName || !hasPath || !hasPrice) return null;
+
   if (rawContent.length <= maxLength) return rawContent;
+
+  // Potong dengan cerdas: ambil baris yang mengandung setidaknya dua kategori
   const lines = rawContent.split('\n');
-  const relevantLines = lines.filter(line => keywords.some(kw => line.toLowerCase().includes(kw)));
+  const relevantLines = lines.filter(line => {
+    const lowerLine = line.toLowerCase();
+    const hasN = nameKeywords.some(kw => lowerLine.includes(kw));
+    const hasP = pathKeywords.some(kw => lowerLine.includes(kw));
+    const hasPr = priceKeywords.some(kw => lowerLine.includes(kw));
+    return (hasN && hasP) || (hasN && hasPr) || (hasP && hasPr);
+  });
+  
   return relevantLines.join('\n').substring(0, maxLength);
 }
 
