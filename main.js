@@ -324,34 +324,37 @@ async function discoverFromHealth(base, timeout) {
   }
 }
 
-// ========== SDS HELPER ==========
-async function callSDS(content, timeout) {
+// ========== SDS HELPER WITH DEEP LOGGING ==========
+async function callSDS(content, timeout, sourceLabel = 'unknown') {
   const finalContent = content.substring(0, 15000);
-  const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
-    json: { content: finalContent }, timeout: { request: timeout }, throwHttpErrors: false,
-  });
-  if (sdsResponse.statusCode !== 200) return [];
-  return JSON.parse(sdsResponse.body);
-}
-
-function applyEnrichment(candidates, aiEndpoints) {
-  console.log(`[APPLY] Matching ${aiEndpoints.length} AI endpoints to ${candidates.length} candidates...`);
-  console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
-  console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
-
-  for (const candidate of candidates) {
-    const candPath = normalizePath(candidate.path);
-    const match = aiEndpoints.find(ai => normalizePath(ai.path) === candPath);
-    if (match) {
-      console.log(`[APPLY] Match: ${candidate.path} → price=${match.price}, label=${match.label}`);
-      if (!candidate.rawPrice && match.price) candidate.rawPrice = String(Math.round(match.price * 1000000));
-      if (!candidate.label && match.label) candidate.label = match.label;
-      if (!candidate.description && match.description) candidate.description = match.description;
-      if (!candidate.network && match.network) candidate.network = match.network;
-      if (!candidate.asset && match.asset) candidate.asset = match.asset;
-      if (!candidate.payTo && match.payTo) candidate.payTo = match.payTo;
-      candidate.source = `${candidate.source}+sds-enrich`;
-    }
+  console.log(`[SDS-CALL] Sending ${finalContent.length} chars to SDS from ${sourceLabel}`);
+  console.log(`[SDS-CALL] Content preview (first 500): ${finalContent.substring(0, 500)}`);
+  
+  let sdsResponse;
+  try {
+    sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
+      json: { content: finalContent }, timeout: { request: timeout }, throwHttpErrors: false,
+    });
+  } catch (err) {
+    console.error(`[SDS-CALL] Network error: ${err.message}`);
+    return [];
+  }
+  
+  console.log(`[SDS-CALL] Response status: ${sdsResponse.statusCode}`);
+  console.log(`[SDS-CALL] Response body preview: ${sdsResponse.body?.substring(0, 500)}`);
+  
+  if (sdsResponse.statusCode !== 200) {
+    console.error(`[SDS-CALL] Non-200 status: ${sdsResponse.statusCode}`);
+    return [];
+  }
+  
+  try {
+    const parsed = JSON.parse(sdsResponse.body);
+    console.log(`[SDS-CALL] Parsed ${parsed.length} endpoints`);
+    return parsed;
+  } catch (err) {
+    console.error(`[SDS-CALL] JSON parse error: ${err.message}`);
+    return [];
   }
 }
 
@@ -360,21 +363,24 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   console.log('[ENRICH] Trying to enrich candidates...');
 
   // Priority 1: /llms.txt
-  console.log('[ENRICH] Fetching /llms.txt...');
-  let rawContent = '';
-  try {
-    const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-    if (llmsRes.statusCode === 200) rawContent = llmsRes.body;
-  } catch (err) {}
-  if (rawContent) {
-    const aiEndpoints = await callSDS(rawContent, 30000);
-    console.log(`[ENRICH] /llms.txt: SDS returned ${aiEndpoints.length} endpoints`);
-    if (aiEndpoints.length > 0) {
-      applyEnrichment(candidates, aiEndpoints);
-    }
-  } else {
-    console.log('[ENRICH] /llms.txt not available');
+console.log('[ENRICH] Fetching /llms.txt...');
+let rawContent = '';
+try {
+  const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+  console.log(`[ENRICH] /llms.txt status: ${llmsRes.statusCode}, length: ${llmsRes.body?.length || 0}`);
+  if (llmsRes.statusCode === 200) rawContent = llmsRes.body;
+} catch (err) {
+  console.error(`[ENRICH] /llms.txt fetch error: ${err.message}`);
+}
+if (rawContent) {
+  const aiEndpoints = await callSDS(rawContent, 30000, 'llms.txt');
+  console.log(`[ENRICH] /llms.txt: SDS returned ${aiEndpoints.length} endpoints`);
+  if (aiEndpoints.length > 0) {
+    applyEnrichment(candidates, aiEndpoints);
   }
+} else {
+  console.log('[ENRICH] /llms.txt not available or empty');
+}
 
   // Priority 2: /.well-known/x402
   console.log('[ENRICH] Fetching /.well-known/x402...');
