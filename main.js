@@ -231,37 +231,7 @@ async function discoverFromHealth(base, timeout) {
   } catch (err) { console.log(`[HEALTH] Error: ${err.message}`); return null; }
 }
 
-// ========== AI DISCOVERY via SDS (umum) ==========
-
-function filterRelevantContent(rawContent, maxLength = 6000) {
-  // Tiga kata kunci: nama/deskripsi, path, harga
-  const nameKeywords = ['service', 'agent', 'api', 'endpoint', 'description', 'label', 'name'];
-  const pathKeywords = ['/api/', '/v1/', '/x402/', '/verify/', '/proxy/', '/summarize', '/translate', 'path', 'endpoint', 'url'];
-  const priceKeywords = ['$0.', '$1.', 'usdc', 'price', 'pricing', 'amount', 'free'];
-
-  const lowerContent = rawContent.toLowerCase();
-  
-  // Cek apakah setidaknya dua dari tiga kategori muncul
-  const hasName = nameKeywords.some(kw => lowerContent.includes(kw));
-  const hasPath = pathKeywords.some(kw => lowerContent.includes(kw));
-  const hasPrice = priceKeywords.some(kw => lowerContent.includes(kw));
-
-  if (!hasName || !hasPath || !hasPrice) return null;
-
-  if (rawContent.length <= maxLength) return rawContent;
-
-  // Potong dengan cerdas: ambil baris yang mengandung setidaknya dua kategori
-  const lines = rawContent.split('\n');
-  const relevantLines = lines.filter(line => {
-    const lowerLine = line.toLowerCase();
-    const hasN = nameKeywords.some(kw => lowerLine.includes(kw));
-    const hasP = pathKeywords.some(kw => lowerLine.includes(kw));
-    const hasPr = priceKeywords.some(kw => lowerLine.includes(kw));
-    return (hasN && hasP) || (hasN && hasPr) || (hasP && hasPr);
-  });
-  
-  return relevantLines.join('\n').substring(0, maxLength);
-}
+// ========== AI DISCOVERY via SDS (tanpa filter ketat) ==========
 
 async function callSDS(content, timeout) {
   const finalContent = content.substring(0, 15000);
@@ -273,63 +243,11 @@ async function callSDS(content, timeout) {
 }
 
 async function discoverWithAI(domain, base, timeout) {
+  // Prioritas 1: well-known/x402 langsung
   try {
-    // Coba ambil well-known/x402
-    const wkResponse = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-    if (wkResponse.statusCode === 200) {
-      const data = JSON.parse(wkResponse.body);
-      // Jika ada services, kirim models dari layanan pertama
-      if (data.services && Array.isArray(data.services)) {
-        const serviceWithModels = data.services.find(svc => svc.models && Array.isArray(svc.models) && svc.models.length > 0);
-        if (serviceWithModels) {
-          const modelsContent = JSON.stringify({ endpoint: serviceWithModels.endpoint, models: serviceWithModels.models.slice(0, 10) });
-          console.log(`[AI-DISCOVERY] Sending models array: ${modelsContent.length} chars`);
-          const models = await callSDS(modelsContent, 30000);
-          if (models.length > 0) {
-            const candidates = [];
-            for (const svc of data.services.slice(0, 10)) {
-              if (svc.models && Array.isArray(svc.models)) {
-                for (const model of svc.models) {
-                  const aiModel = models.find(m => m.label && m.label.includes(model.name || model.id || ''));
-                  candidates.push({
-                    path: svc.endpoint || svc.path || '', method: svc.method || 'POST', body: null, source: 'sds-ai',
-                    rawPrice: aiModel ? String(Math.round((aiModel.price || 0) * 1000000)) : '',
-                    network: (svc.payment || {}).network || data.network || '', asset: (svc.payment || {}).asset || data.asset || '',
-                    label: `${svc.name || ''} - ${model.name || model.id || ''}`, description: model.description || svc.description || '',
-                  });
-                }
-              } else {
-                candidates.push({
-                  path: svc.endpoint || svc.path || '', method: svc.method || 'POST', body: null, source: 'sds-ai',
-                  rawPrice: '', network: (svc.payment || {}).network || data.network || '', asset: (svc.payment || {}).asset || data.asset || '',
-                  label: svc.name || svc.id || '', description: svc.description || '',
-                });
-              }
-            }
-            if (candidates.length > 0) return candidates;
-          }
-        }
-      }
-    }
-
-    // Fallback umum: kumpulkan konten dari berbagai sumber
-    const discoveryUrls = [
-      `https://${base}/.well-known/agent-card.json`, `https://${base}/.well-known/agent.json`,
-      `https://${base}/.well-known/agent-services.json`, `https://${base}/.well-known/x402`,
-      `https://${base}/openapi.json`, `https://${base}/health`,
-    ];
-    let combinedContent = '';
-    for (const url of discoveryUrls) {
-      try {
-        const resp = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-        if (resp.statusCode === 200) {
-          const filtered = filterRelevantContent(resp.body, 6000);
-          if (filtered) combinedContent += `\n--- From ${url} ---\n${filtered}`;
-        }
-      } catch (err) {}
-    }
-    if (combinedContent.trim()) {
-      const endpoints = await callSDS(combinedContent, 60000);
+    const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (wkRes.statusCode === 200 && wkRes.body) {
+      const endpoints = await callSDS(wkRes.body, 30000);
       if (endpoints.length > 0) {
         return endpoints.map(ep => ({
           path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
@@ -338,12 +256,74 @@ async function discoverWithAI(domain, base, timeout) {
         }));
       }
     }
+  } catch (err) { console.log(`[AI-DISCOVERY] well-known/x402 error: ${err.message}`); }
 
-    return null;
-  } catch (err) { console.log(`[AI-DISCOVERY] Error: ${err.message}`); return null; }
+  // Prioritas 2: agent-card
+  const agentPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
+  for (const ap of agentPaths) {
+    try {
+      const agentRes = await got(`https://${base}${ap}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+      if (agentRes.statusCode === 200 && agentRes.body) {
+        const endpoints = await callSDS(agentRes.body, 30000);
+        if (endpoints.length > 0) {
+          return endpoints.map(ep => ({
+            path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+            rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+            label: ep.label || ep.path, description: ep.description || '',
+          }));
+        }
+      }
+    } catch (err) { console.log(`[AI-DISCOVERY] ${ap} error: ${err.message}`); }
+  }
+
+  // Prioritas 3: health dan openapi satu per satu
+  const otherSources = ['/health', '/openapi.json'];
+  for (const src of otherSources) {
+    try {
+      const srcRes = await got(`https://${base}${src}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+      if (srcRes.statusCode === 200 && srcRes.body) {
+        const endpoints = await callSDS(srcRes.body, 30000);
+        if (endpoints.length > 0) {
+          return endpoints.map(ep => ({
+            path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+            rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+            label: ep.label || ep.path, description: ep.description || '',
+          }));
+        }
+      }
+    } catch (err) { console.log(`[AI-DISCOVERY] ${src} error: ${err.message}`); }
+  }
+
+  // Prioritas 4: gabungan semua sumber
+  const allSources = [
+    `https://${base}/.well-known/x402`, `https://${base}/.well-known/agent-card.json`,
+    `https://${base}/.well-known/agent.json`, `https://${base}/.well-known/agent-services.json`,
+    `https://${base}/health`, `https://${base}/openapi.json`,
+  ];
+  let combined = '';
+  for (const url of allSources) {
+    try {
+      const res = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+      if (res.statusCode === 200 && res.body) {
+        combined += `\n--- From ${url} ---\n${res.body.substring(0, 5000)}`;
+      }
+    } catch (err) {}
+  }
+  if (combined.trim()) {
+    const endpoints = await callSDS(combined, 60000);
+    if (endpoints.length > 0) {
+      return endpoints.map(ep => ({
+        path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+        rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+        label: ep.label || ep.path, description: ep.description || '',
+      }));
+    }
+  }
+
+  return null;
 }
 
-// ========== SCRAPER UNTUK DOMAIN HTML ==========
+// ========== SCRAPER UNTUK DOMAIN HTML (kata kunci diperluas, tanpa batas 12.000) ==========
 async function scrapeHTMLPages(domain, base, timeout) {
   const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`];
   const discoveredHTML = new Set();
@@ -351,14 +331,15 @@ async function scrapeHTMLPages(domain, base, timeout) {
   const crawler = new CheerioCrawler({
     maxRequestsPerCrawl: 20, requestHandlerTimeoutSecs: 30,
     async requestHandler({ request, $, enqueueLinks }) {
-      const bodyText = $('body').text();
-      if (bodyText.toLowerCase().includes('x402') || bodyText.toLowerCase().includes('agent') || bodyText.toLowerCase().includes('payment')) {
-        discoveredHTML.add({ url: request.url, html: $.html().substring(0, 12000) });
+      const bodyText = $('body').text().toLowerCase();
+      const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method'];
+      if (keywords.some(kw => bodyText.includes(kw))) {
+        discoveredHTML.add({ url: request.url, html: $.html() }); // simpan utuh, nanti dipotong di pemanggilan SDS
         console.log(`[SCRAPER] Found relevant HTML: ${request.url}`);
         await enqueueLinks({
           transformRequestFunction(req) {
-            const linkText = $(`a[href="${req.url}"]`).text() || '';
-            if (linkText.toLowerCase().includes('api') || linkText.toLowerCase().includes('x402') || linkText.toLowerCase().includes('payment')) return req;
+            const linkText = ($(`a[href="${req.url}"]`).text() || '').toLowerCase();
+            if (keywords.some(kw => linkText.includes(kw))) return req;
             return false;
           },
         });
@@ -375,7 +356,7 @@ async function discoverWithScraper(domain, base, timeout) {
 
   let combinedHTML = '';
   for (const page of htmlPages) {
-    combinedHTML += `\n--- From ${page.url} ---\n${page.html}`;
+    combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
   }
 
   const endpoints = await callSDS(combinedHTML.substring(0, 15000), 60000);
@@ -394,7 +375,7 @@ async function discoverWithScraper(domain, base, timeout) {
 async function checkEndpoint(base, candidate, timeout) {
   let { path, method = 'GET' } = candidate;
 
-  // ✅ Pembersihan: kalau path masih berbentuk URL lengkap, ambil bagian path-nya saja
+  // Pembersihan: kalau path masih berbentuk URL lengkap, ambil bagian path-nya saja
   if (path && (path.startsWith('http://') || path.startsWith('https://'))) {
     try {
       const parsed = new URL(path);
@@ -462,7 +443,7 @@ for (const base of targetDomains) {
       scanList = candidates;
       console.log(`[DISCOVERY] Deterministic found ${candidates.length} endpoints`);
     } else {
-      // 2. AI via SDS
+      // 2. AI via SDS (dengan prioritas)
       candidates = await discoverWithAI(domain, base, timeout);
       if (candidates && candidates.length > 0) {
         scanList = candidates;
