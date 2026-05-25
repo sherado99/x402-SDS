@@ -375,7 +375,8 @@ async function scrapeStaticPages(base, timeout) {
 // ========== DYNAMIC SCRAPER (Puppeteer with separate queue) ==========
 async function scrapeDynamicPages(base, timeout) {
   // Queue khusus agar tidak bentrok dengan Cheerio
-  const queue = await RequestQueue.open(`puppeteer-queue-${base}`);
+  const safeName = base.replace(/\./g, '-');
+  const queue = await RequestQueue.open(`puppeteer-queue-${safeName}`);
   const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
   for (const url of startUrls) await queue.addRequest({ url });
 
