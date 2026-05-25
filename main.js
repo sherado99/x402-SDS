@@ -72,7 +72,7 @@ async function logFailure(base, stage, details = {}) { try { const dataset = awa
 
 async function saveFileToKVS(filename, buffer, contentType) { const store = await Actor.openKeyValueStore(); await store.setValue(filename, buffer, { contentType }); return https://api.apify.com/v2/key-value-stores/${store.id}/records/${filename}?disableRedirect=true; }
 
-async function loadDictionary() { const fallback = BUILT_IN_DICTIONARY; try { const raw = await fs.readFile('./dictionary-path.json', 'utf8'); const parsed = JSON.parse(raw); if (Array.isArray(parsed) && parsed.length > 0) { return parsed.map(normalizePath); } } catch { // ignore and use fallback } return fallback.map(normalizePath); }
+async function loadDictionary() { const fallback = BUILT_IN_DICTIONARY; try { const raw = await fs.readFile('./dictionary_path.json', 'utf8'); const parsed = JSON.parse(raw); if (Array.isArray(parsed) && parsed.length > 0) { return parsed.map(normalizePath); } } catch { // ignore and use fallback } return fallback.map(normalizePath); }
 
 function normalizeCandidate(raw = {}) { return { path: normalizePath(raw.path || raw.endpoint || raw.url || ''), method: String(raw.method || 'GET').toUpperCase(), rawPrice: String(raw.rawPrice || raw.price || raw.amount || ''), network: String(raw.network || ''), asset: String(raw.asset || ''), payTo: String(raw.payTo || ''), label: String(raw.label || raw.name || ''), description: String(raw.description || ''), source: String(raw.source || 'unknown'), }; }
 
