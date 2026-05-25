@@ -545,7 +545,7 @@ if (!domain) {
   await Actor.exit();
 }
 
-domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+domain = domain.replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
 
 const targetDomains = [normalizeDomain(domain)];
 if (includeSubdomains) {
