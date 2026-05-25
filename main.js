@@ -136,51 +136,6 @@ async function saveFileToKVS(filename, buffer, contentType) {
 
 // ========== DETERMINISTIC DISCOVERY ==========
 
-async function discoverFromWellKnownAgent(base, timeout) {
-  const paths = [
-    '/.well-known/agent-card.json',
-    '/.well-known/agent.json',
-    '/.well-known/agent-services.json',
-  ];
-
-  for (const wkPath of paths) {
-    try {
-      const response = await got(`https://${base}${wkPath}`, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      if (response.statusCode !== 200) continue;
-
-      const data = JSON.parse(response.body);
-      const candidates = [];
-
-      const services = data.skills || data.services || data.endpoints || [];
-      for (const svc of services) {
-        const path = svc.endpoint || svc.path || svc.url;
-        if (!path) continue;
-        candidates.push({
-          path,
-          method: svc.method || 'GET',
-          body: null,
-          source: wkPath,
-          rawPrice: String(svc.price || svc.cost || ''),
-          network: svc.network || '',
-          asset: svc.asset || '',
-          label: svc.name || svc.id || '',
-          description: svc.description || '',
-        });
-      }
-
-      if (candidates.length > 0) return candidates;
-    } catch (err) {
-      console.log(`[AGENT-CARD] ${wkPath} error: ${err.message}`);
-    }
-  }
-  return null;
-}
-
 async function discoverFromWellKnownX402(base, timeout) {
   try {
     const response = await got(`https://${base}/.well-known/x402`, {
@@ -194,6 +149,31 @@ async function discoverFromWellKnownX402(base, timeout) {
     const data = JSON.parse(response.body);
     const candidates = [];
 
+    // Helper untuk ekstrak harga dari berbagai format
+    const extractPrice = (pricing) => {
+      if (!pricing) return '';
+      
+      // Format standar: { price: 0.008 }
+      if (typeof pricing.price === 'number') return String(Math.round(pricing.price * 1000000));
+      if (typeof pricing.price === 'string') {
+        const match = pricing.price.match(/\$?([\d.]+)/);
+        if (match) return String(Math.round(parseFloat(match[1]) * 1000000));
+      }
+      
+      // Format blockrun: pricePerSource
+      if (typeof pricing.pricePerSource === 'number') return String(Math.round(pricing.pricePerSource * 1000000));
+      
+      // Format LLM: inputPerMillionTokens (ambil yang terkecil sebagai representasi)
+      if (typeof pricing.inputPerMillionTokens === 'number') return String(Math.round(pricing.inputPerMillionTokens * 1000000));
+      
+      // Format lain
+      if (typeof pricing.pricePerCall === 'number') return String(Math.round(pricing.pricePerCall * 1000000));
+      if (typeof pricing.perRequest === 'number') return String(Math.round(pricing.perRequest * 1000000));
+      if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1000000));
+      
+      return '';
+    };
+
     // 1. resources array of objects
     if (data.resources && Array.isArray(data.resources)) {
       for (const res of data.resources) {
@@ -203,9 +183,9 @@ async function discoverFromWellKnownX402(base, timeout) {
             method: res.method || 'GET',
             body: null,
             source: '/.well-known/x402',
-            rawPrice: String(res.price || ''),
-            network: res.network || '',
-            asset: res.asset || '',
+            rawPrice: extractPrice(res.pricing || res),
+            network: res.network || data.network || '',
+            asset: res.asset || data.asset || '',
             label: res.name || res.id || '',
             description: res.description || '',
           });
@@ -228,7 +208,7 @@ async function discoverFromWellKnownX402(base, timeout) {
       }
     }
 
-    // 2. resourceDetails array (deepbluebase style)
+    // 2. resourceDetails array
     if (data.resourceDetails && Array.isArray(data.resourceDetails)) {
       for (const detail of data.resourceDetails) {
         if (detail.path || detail.endpoint) {
@@ -237,7 +217,7 @@ async function discoverFromWellKnownX402(base, timeout) {
             method: detail.method || 'GET',
             body: null,
             source: '/.well-known/x402',
-            rawPrice: String(detail.price || ''),
+            rawPrice: extractPrice(detail.pricing || detail),
             network: detail.network || data.network || '',
             asset: detail.asset || data.asset || '',
             label: detail.name || detail.label || detail.path || '',
@@ -254,21 +234,19 @@ async function discoverFromWellKnownX402(base, timeout) {
         if (!path) continue;
 
         let rawPrice = '';
-        const pricing = svc.pricing || svc.price || {};
-        const payment = svc.payment || {};
-
-        if (typeof svc.price === 'number') {
-          rawPrice = String(Math.round(svc.price * 1000000));
-        } else if (typeof svc.price === 'string') {
-          const match = svc.price.match(/\$?([\d.]+)/);
-          if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1000000));
-        } else if (pricing.pricePerSource) {
-          rawPrice = String(Math.round(pricing.pricePerSource * 1000000));
-        } else if (pricing.inputPerMillionTokens) {
-          rawPrice = String(Math.round(pricing.inputPerMillionTokens * 1000000));
-        } else if (pricing.pricePerCall) {
-          rawPrice = String(Math.round(pricing.pricePerCall * 1000000));
+        
+        // Cek pricing di level service
+        const svcPricing = svc.pricing || svc.price || {};
+        rawPrice = extractPrice(svcPricing);
+        
+        // Kalau tidak ada, coba ambil dari model pertama (untuk LLM)
+        if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) {
+          const firstModel = svc.models[0];
+          const modelPricing = firstModel.pricing || firstModel.price || {};
+          rawPrice = extractPrice(modelPricing);
         }
+
+        const payment = svc.payment || {};
 
         candidates.push({
           path,
@@ -284,7 +262,7 @@ async function discoverFromWellKnownX402(base, timeout) {
       }
     }
 
-    // Deduplicate by path+method
+    // Deduplicate
     const unique = [];
     const seen = new Set();
     for (const c of candidates) {
@@ -463,48 +441,89 @@ function filterRelevantContent(rawContent, maxLength = 6000) {
 }
 
 async function discoverWithAI(domain, base, timeout) {
-  const discoveryUrls = [
-    `https://${base}/.well-known/agent-card.json`,
-    `https://${base}/.well-known/agent.json`,
-    `https://${base}/.well-known/agent-services.json`,
-    `https://${base}/.well-known/x402`,
-    `https://${base}/openapi.json`,
-    `https://${base}/health`,
-  ];
-
-  let combinedContent = '';
-  let hasServicesModels = false;
-
-  for (const url of discoveryUrls) {
-    try {
-      const response = await got(url, {
-        method: 'GET',
-        timeout: { request: timeout },
-        throwHttpErrors: false,
-        retry: { limit: 0 },
-      });
-      if (response.statusCode === 200) {
-        const rawContent = response.body;
-        
-        if (!hasServicesModels && rawContent.includes('"services"') && rawContent.includes('"models"')) {
-          hasServicesModels = true;
-        }
-
-        const filtered = filterRelevantContent(rawContent, hasServicesModels ? 15000 : 6000);
-        if (filtered) {
-          combinedContent += `\n--- From ${url} ---\n${filtered}`;
-          console.log(`[AI-DISCOVERY] Filtered content from ${url}: ${filtered.length} chars`);
-        }
-      }
-    } catch (err) {
-      console.log(`[AI-DISCOVERY] Fetch error ${url}: ${err.message}`);
+  try {
+    // Ambil well-known/x402
+    const wkResponse = await got(`https://${base}/.well-known/x402`, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+    });
+    
+    if (wkResponse.statusCode !== 200) {
+      console.log('[AI-DISCOVERY] Well-known x402 not available');
+      return null;
     }
-  }
 
-  if (!combinedContent.trim()) {
-    console.log('[AI-DISCOVERY] No relevant content found for AI');
+    const data = JSON.parse(wkResponse.body);
+    let contentToSend = '';
+
+    // Jika ada services array, kirim hanya itu (targeted)
+    if (data.services && Array.isArray(data.services)) {
+      contentToSend = JSON.stringify(data.services);
+      console.log(`[AI-DISCOVERY] Sending services array: ${contentToSend.length} chars`);
+    }
+    // Jika tidak, fallback ke konten biasa
+    else {
+      const discoveryUrls = [
+        `https://${base}/.well-known/agent-card.json`,
+        `https://${base}/.well-known/agent.json`,
+        `https://${base}/.well-known/agent-services.json`,
+        `https://${base}/openapi.json`,
+        `https://${base}/health`,
+      ];
+
+      for (const url of discoveryUrls) {
+        try {
+          const resp = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+          if (resp.statusCode === 200) {
+            const filtered = filterRelevantContent(resp.body, 6000);
+            if (filtered) {
+              contentToSend += `\n--- From ${url} ---\n${filtered}`;
+            }
+          }
+        } catch (err) {}
+      }
+    }
+
+    if (!contentToSend.trim()) {
+      console.log('[AI-DISCOVERY] No content to send to AI');
+      return null;
+    }
+
+    // Batasi ke 15000 karakter untuk SDS
+    const finalContent = contentToSend.substring(0, 15000);
+
+    const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
+      json: { content: finalContent },
+      timeout: { request: 30000 },
+      throwHttpErrors: false,
+    });
+
+    if (sdsResponse.statusCode !== 200) {
+      console.log(`[AI-DISCOVERY] SDS returned ${sdsResponse.statusCode}`);
+      return null;
+    }
+
+    const endpoints = JSON.parse(sdsResponse.body);
+    console.log(`[AI-DISCOVERY] SDS extracted ${endpoints.length} endpoints`);
+
+    return endpoints.map(ep => ({
+      path: ep.path,
+      method: ep.method || 'GET',
+      body: null,
+      source: 'sds-ai',
+      rawPrice: String(Math.round((ep.price || 0) * 1000000)),
+      network: ep.network || '',
+      asset: ep.asset || '',
+      label: ep.label || ep.path,
+      description: ep.description || '',
+    }));
+  } catch (err) {
+    console.log(`[AI-DISCOVERY] Error: ${err.message}`);
     return null;
   }
+}
 
   try {
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
