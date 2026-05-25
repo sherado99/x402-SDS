@@ -36,6 +36,7 @@ const BUILT_IN_DICTIONARY = [
   '/v1/x402/payment',
   '/v2/x402',
   '/.well-known/x402',
+  '/.well-known/agent-services.json',
 ];
 
 function normalizeDomain(d) {
@@ -385,6 +386,7 @@ async function discoverWithAI(domain, base, timeout) {
     `https://${base}/.well-known/x402`,
     `https://${base}/openapi.json`,
     `https://${base}/health`,
+    `https://${base}/.well-known/agent-services.json`,
   ];
 
   let combinedContent = '';
