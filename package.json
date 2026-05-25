@@ -1,14 +1,13 @@
 {
-  "name": "X402 Domain Scanner",
-  "version": "1.0.0",
+  "name": "x402-domain-scanner",
+  "version": "1.1.0",
   "type": "module",
   "dependencies": {
     "apify": "^3.1.0",
     "crawlee": "^3.16.0",
     "got": "^12.0.0",
     "docx": "^8.5.0",
-    "pdfkit": "^0.15.0",
-    "puppeteer": "^22.0.0"
+    "pdfkit": "^0.15.0"
   },
   "scripts": {
     "start": "node main.js"
