@@ -243,9 +243,16 @@ async function callSDS(content, timeout) {
 }
 
 function applyEnrichment(candidates, aiEndpoints) {
+  console.log(`[APPLY] Mencocokkan ${aiEndpoints.length} endpoint AI ke ${candidates.length} kandidat...`);
   for (const candidate of candidates) {
-    const match = aiEndpoints.find(ai => ai.path === candidate.path);
+    const match = aiEndpoints.find(ai => {
+      // Normalisasi path: hilangkan trailing slash, lowercase
+      const aiPath = (ai.path || '').toLowerCase().replace(/\/+$/, '');
+      const candPath = (candidate.path || '').toLowerCase().replace(/\/+$/, '');
+      return aiPath === candPath;
+    });
     if (match) {
+      console.log(`[APPLY] Match: ${candidate.path} → price=${match.price}, label=${match.label}`);
       if (!candidate.rawPrice && match.price) candidate.rawPrice = String(Math.round(match.price * 1000000));
       if (!candidate.label && match.label) candidate.label = match.label;
       if (!candidate.description && match.description) candidate.description = match.description;
@@ -255,7 +262,6 @@ function applyEnrichment(candidates, aiEndpoints) {
     }
   }
 }
-
 /**
  * Enrich kandidat dengan AI, mencoba berbagai sumber secara bertahap.
  * Prioritas:
