@@ -486,7 +486,6 @@ async function discoverWithAI(domain, base, timeout) {
     let finalContent = '';
 
     if (data.services && Array.isArray(data.services)) {
-      // Untuk array services yang besar, ambil hanya 10 pertama
       let servicesToSend = data.services;
       if (servicesToSend.length > 10) {
         servicesToSend = servicesToSend.slice(0, 10);
@@ -525,7 +524,6 @@ async function discoverWithAI(domain, base, timeout) {
       return null;
     }
 
-    // Naikkan timeout menjadi 60 detik untuk konten besar
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
       json: { content: finalContent },
       timeout: { request: 60000 },
