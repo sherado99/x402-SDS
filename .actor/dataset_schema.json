@@ -71,6 +71,12 @@
         "description": "Product description from the X402 offer.",
         "example": "Ethical AI assistant that provides honest, warm presence."
       },
+      "auditHash": {
+        "type": "string",
+        "title": "Audit Hash",
+        "description": "SHA-256 hash of the raw response body for verifiable claims.",
+        "example": "a1b2c3d4e5f6..."
+      },
       "httpStatus": {
         "type": "string",
         "title": "HTTP Status",
@@ -108,30 +114,17 @@
         "example": "https://api.apify.com/v2/key-value-stores/STORE_ID/records/OUTPUT.pdf"
       }
     },
-    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable"]
+    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
   },
   "views": {
     "overview": {
       "title": "X402 Domain Scan Results",
       "transformation": {
         "fields": [
-          "domain",
-          "path",
-          "status",
-          "x402Version",
-          "price",
-          "priceReadable",
-          "network",
-          "asset",
-          "payTo",
-          "label",
-          "description",
-          "httpStatus",
-          "responseTimeMs",
-          "errorMessage",
-          "timestamp",
-          "download_docx",
-          "download_pdf"
+          "domain", "path", "status", "x402Version", "price", "priceReadable",
+          "network", "asset", "payTo", "label", "description", "auditHash",
+          "httpStatus", "responseTimeMs", "errorMessage", "timestamp",
+          "download_docx", "download_pdf"
         ]
       },
       "display": {
@@ -148,6 +141,7 @@
           "payTo": { "label": "Pay To", "format": "text" },
           "label": { "label": "Label", "format": "text" },
           "description": { "label": "Description", "format": "text" },
+          "auditHash": { "label": "Audit Hash", "format": "text" },
           "httpStatus": { "label": "HTTP Status", "format": "text" },
           "responseTimeMs": { "label": "Response Time (ms)", "format": "text" },
           "errorMessage": { "label": "Error Message", "format": "text" },
