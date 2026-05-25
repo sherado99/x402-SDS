@@ -1,5 +1,5 @@
 import { Actor } from 'apify';
-import { CheerioCrawler } from 'crawlee';
+import { CheerioCrawler, PuppeteerCrawler } from 'crawlee';
 import got from 'got';
 import crypto from 'crypto';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
@@ -34,9 +34,7 @@ function normalizePath(rawPath) {
       p = url.pathname + (url.search || '');
     } catch (e) { /* keep as-is */ }
   }
-  // Remove /api prefix if present (handles cases like /api/v1/...)
   p = p.replace(/^\/api(?=\/)/i, '');
-  // Remove trailing slash, lowercase
   return p.replace(/\/+$/, '').toLowerCase();
 }
 
@@ -335,16 +333,31 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
     }
   }
 
-  // Priority 4: HTML scraper
-  console.log('[ENRICH] Running HTML scraper...');
-  const scrapedHTML = await scrapeHTMLPages(base, timeout);
-  if (scrapedHTML.length > 0) {
+  // Priority 4: Static HTML scraper (Cheerio)
+  console.log('[ENRICH] Running static HTML scraper...');
+  const staticPages = await scrapeStaticPages(base, timeout);
+  if (staticPages.length > 0) {
     let combinedHTML = '';
-    for (const page of scrapedHTML) {
+    for (const page of staticPages) {
       combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
     }
     const aiEndpoints = await callSDS(combinedHTML, 60000);
-    console.log(`[ENRICH] Scraper: SDS returned ${aiEndpoints.length} endpoints`);
+    console.log(`[ENRICH] Static scraper: SDS returned ${aiEndpoints.length} endpoints`);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+    }
+  }
+
+  // Priority 5: JavaScript-rendered scraper (Puppeteer) for dynamic pages
+  console.log('[ENRICH] Running JS-rendered scraper...');
+  const dynamicPages = await scrapeDynamicPages(base, timeout);
+  if (dynamicPages.length > 0) {
+    let combinedHTML = '';
+    for (const page of dynamicPages) {
+      combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
+    }
+    const aiEndpoints = await callSDS(combinedHTML, 60000);
+    console.log(`[ENRICH] Dynamic scraper: SDS returned ${aiEndpoints.length} endpoints`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
     }
@@ -353,8 +366,8 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   return candidates;
 }
 
-// ========== SCRAPER ==========
-async function scrapeHTMLPages(base, timeout) {
+// ========== STATIC SCRAPER (Cheerio) ==========
+async function scrapeStaticPages(base, timeout) {
   const startUrls = [
     `https://${base}`,
     `https://${base}/docs`,
@@ -375,7 +388,7 @@ async function scrapeHTMLPages(base, timeout) {
       ];
       if (keywords.some(kw => bodyText.includes(kw))) {
         discoveredHTML.add({ url: request.url, html: $.html() });
-        console.log(`[SCRAPER] Found: ${request.url}`);
+        console.log(`[STATIC-SCRAPER] Found: ${request.url}`);
         await enqueueLinks({
           transformRequestFunction(req) {
             const linkText = ($(`a[href="${req.url}"]`).text() || '').toLowerCase();
@@ -390,8 +403,50 @@ async function scrapeHTMLPages(base, timeout) {
   return [...discoveredHTML];
 }
 
+// ========== DYNAMIC SCRAPER (Puppeteer) ==========
+async function scrapeDynamicPages(base, timeout) {
+  const startUrls = [
+    `https://${base}`,
+    `https://${base}/docs`,
+    `https://${base}/api`,
+    `https://${base}/developers`,
+    `https://${base}/pricing`
+  ];
+  const discoveredHTML = new Set();
+
+  const crawler = new PuppeteerCrawler({
+    maxRequestsPerCrawl: 10,
+    requestHandlerTimeoutSecs: 60,
+    launchContext: {
+      launchOptions: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      },
+    },
+    async requestHandler({ request, page, enqueueLinks }) {
+      await page.waitForTimeout(5000); // Wait for JS to render
+      const bodyText = await page.evaluate(() => document.body.innerText.toLowerCase());
+      const keywords = [
+        'x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method',
+        'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'
+      ];
+      if (keywords.some(kw => bodyText.includes(kw))) {
+        const html = await page.content();
+        discoveredHTML.add({ url: request.url, html });
+        console.log(`[DYNAMIC-SCRAPER] Found: ${request.url}`);
+        await enqueueLinks({
+          transformRequestFunction(req) {
+            return req; // Follow all links on dynamic pages
+          },
+        });
+      }
+    },
+  });
+  await crawler.run(startUrls);
+  return [...discoveredHTML];
+}
+
 async function discoverWithAI(domain, base, timeout) {
-  // Priority 1: /llms.txt
   try {
     const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (llmsRes.statusCode === 200 && llmsRes.body) {
@@ -406,7 +461,6 @@ async function discoverWithAI(domain, base, timeout) {
     }
   } catch (err) {}
 
-  // Priority 2: /.well-known/x402
   try {
     const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (wkRes.statusCode === 200 && wkRes.body) {
@@ -421,7 +475,6 @@ async function discoverWithAI(domain, base, timeout) {
     }
   } catch (err) {}
 
-  // Priority 3: agent-card
   const agentPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
   for (const ap of agentPaths) {
     try {
@@ -443,11 +496,14 @@ async function discoverWithAI(domain, base, timeout) {
 }
 
 async function discoverWithScraper(domain, base, timeout) {
-  const htmlPages = await scrapeHTMLPages(base, timeout);
-  if (htmlPages.length === 0) return null;
+  const staticPages = await scrapeStaticPages(base, timeout);
+  const dynamicPages = await scrapeDynamicPages(base, timeout);
+  const allPages = [...staticPages, ...dynamicPages];
+
+  if (allPages.length === 0) return null;
 
   let combinedHTML = '';
-  for (const page of htmlPages) {
+  for (const page of allPages) {
     combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
   }
   const endpoints = await callSDS(combinedHTML.substring(0, 15000), 60000);
