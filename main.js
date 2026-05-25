@@ -456,34 +456,35 @@ async function discoverFromHealth(base, timeout) {
 
 // ========== AI DISCOVERY via SDS ==========
 
-function filterRelevantContent(rawContent) {
-  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts', 'service'];
+function filterRelevantContent(rawContent, maxLength = 6000) {
+  const keywords = ['x402', 'payment', 'price', 'usdc', 'network', 'agent', 'endpoint', 'accepts', 'service', 'model'];
   const lowerContent = rawContent.toLowerCase();
   const hasKeyword = keywords.some(kw => lowerContent.includes(kw));
   if (!hasKeyword) return null;
 
-  // Tingkatkan batas ke 6000 untuk menangkap services array
-  if (rawContent.length <= 6000) return rawContent;
+  if (rawContent.length <= maxLength) return rawContent;
 
   const lines = rawContent.split('\n');
   const relevantLines = lines.filter(line => {
     const lowerLine = line.toLowerCase();
     return keywords.some(kw => lowerLine.includes(kw));
   });
-  return relevantLines.join('\n').substring(0, 6000);
+  return relevantLines.join('\n').substring(0, maxLength);
 }
+
 
 async function discoverWithAI(domain, base, timeout) {
   const discoveryUrls = [
     `https://${base}/.well-known/agent-card.json`,
     `https://${base}/.well-known/agent.json`,
+    `https://${base}/.well-known/agent-services.json`,
     `https://${base}/.well-known/x402`,
     `https://${base}/openapi.json`,
     `https://${base}/health`,
-    `https://${base}/.well-known/agent-services.json`,
   ];
 
   let combinedContent = '';
+  let hasServicesModels = false;
 
   for (const url of discoveryUrls) {
     try {
@@ -494,7 +495,14 @@ async function discoverWithAI(domain, base, timeout) {
         retry: { limit: 0 },
       });
       if (response.statusCode === 200) {
-        const filtered = filterRelevantContent(response.body);
+        const rawContent = response.body;
+        
+        // Deteksi apakah konten mengandung services + models (blockrun style)
+        if (!hasServicesModels && rawContent.includes('"services"') && rawContent.includes('"models"')) {
+          hasServicesModels = true;
+        }
+
+        const filtered = filterRelevantContent(rawContent, hasServicesModels ? 15000 : 6000);
         if (filtered) {
           combinedContent += `\n--- From ${url} ---\n${filtered}`;
           console.log(`[AI-DISCOVERY] Filtered content from ${url}: ${filtered.length} chars`);
@@ -510,6 +518,37 @@ async function discoverWithAI(domain, base, timeout) {
     return null;
   }
 
+  try {
+    const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
+      json: { content: combinedContent },
+      timeout: { request: 30000 },
+      throwHttpErrors: false,
+    });
+
+    if (sdsResponse.statusCode !== 200) {
+      console.log(`[AI-DISCOVERY] SDS returned ${sdsResponse.statusCode}`);
+      return null;
+    }
+
+    const endpoints = JSON.parse(sdsResponse.body);
+    console.log(`[AI-DISCOVERY] SDS extracted ${endpoints.length} endpoints`);
+
+    return endpoints.map(ep => ({
+      path: ep.path,
+      method: ep.method || 'GET',
+      body: null,
+      source: 'sds-ai',
+      rawPrice: String(Math.round((ep.price || 0) * 1000000)),
+      network: ep.network || '',
+      asset: ep.asset || '',
+      label: ep.label || ep.path,
+      description: ep.description || '',
+    }));
+  } catch (err) {
+    console.log(`[AI-DISCOVERY] SDS call failed: ${err.message}`);
+    return null;
+  }
+}
   try {
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
       json: { content: combinedContent },
