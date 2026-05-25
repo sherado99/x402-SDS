@@ -93,7 +93,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return `https://api.apify.com/v2/key-value-stores/${store.id}/records/${filename}?disableRedirect=true`;
 }
 
-// ========== DETERMINISTIC DISCOVERY ==========
+// ========== DETERMINISTIC DISCOVERY (TIDAK BERUBAH) ==========
 
 async function discoverFromWellKnownAgent(base, timeout) {
   const paths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
@@ -256,25 +256,50 @@ function applyEnrichment(candidates, aiEndpoints) {
   }
 }
 
+/**
+ * Enrich kandidat dengan AI, mencoba berbagai sumber secara bertahap.
+ * Prioritas:
+ * 1. /llms.txt (standar baru dokumentasi API ramah AI)
+ * 2. /.well-known/x402
+ * 3. /health
+ * 4. Scraper HTML dengan kata kunci yang diperluas
+ */
 async function enrichCandidatesWithAI(candidates, base, timeout) {
-  const needsEnrichment = candidates.some(c => !c.rawPrice && !c.label && !c.description);
-  if (!needsEnrichment) return candidates;
+  console.log('[ENRICH] Mencoba melengkapi data...');
 
-  // Langkah 1: well-known/x402
+  // Prioritas 1: /llms.txt
+  console.log('[ENRICH] Mencoba /llms.txt...');
   let rawContent = '';
+  try {
+    const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (llmsRes.statusCode === 200) rawContent = llmsRes.body;
+  } catch (err) {}
+  if (rawContent) {
+    const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /llms.txt: SDS kembalikan ${aiEndpoints.length} endpoint`);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+      // Jangan return dulu, biarkan sumber lain juga memperkaya
+    }
+  }
+
+  // Prioritas 2: /.well-known/x402
+  console.log('[ENRICH] Mencoba /.well-known/x402...');
+  rawContent = '';
   try {
     const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (wkRes.statusCode === 200) rawContent = wkRes.body;
   } catch (err) {}
   if (rawContent) {
     const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /.well-known/x402: SDS kembalikan ${aiEndpoints.length} endpoint`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
-      if (!candidates.some(c => !c.rawPrice && !c.label && !c.description)) return candidates;
     }
   }
 
-  // Langkah 2: /health
+  // Prioritas 3: /health
+  console.log('[ENRICH] Mencoba /health...');
   rawContent = '';
   try {
     const healthRes = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
@@ -282,14 +307,14 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   } catch (err) {}
   if (rawContent) {
     const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /health: SDS kembalikan ${aiEndpoints.length} endpoint`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
-      if (!candidates.some(c => !c.rawPrice && !c.label && !c.description)) return candidates;
     }
   }
 
-  // Langkah 3: Scraping halaman dokumentasi
-  console.log('[ENRICH] Well-known dan health tidak cukup, memulai scraping...');
+  // Prioritas 4: Scraper HTML (kata kunci diperluas)
+  console.log('[ENRICH] Mencoba scraping halaman dokumentasi...');
   const scrapedHTML = await scrapeHTMLPagesForEnrich(base, timeout);
   if (scrapedHTML.length > 0) {
     let combinedHTML = '';
@@ -297,6 +322,7 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
       combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
     }
     const aiEndpoints = await callSDS(combinedHTML, 60000);
+    console.log(`[ENRICH] Scraper: SDS kembalikan ${aiEndpoints.length} endpoint`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
     }
@@ -305,7 +331,7 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   return candidates;
 }
 
-// Fungsi scraper khusus enrichment (tanpa domain global)
+// ========== SCRAPER HTML (kata kunci diperluas) ==========
 async function scrapeHTMLPagesForEnrich(base, timeout) {
   const startUrls = [
     `https://${base}`,
@@ -321,7 +347,11 @@ async function scrapeHTMLPagesForEnrich(base, timeout) {
     requestHandlerTimeoutSecs: 30,
     async requestHandler({ request, $, enqueueLinks }) {
       const bodyText = $('body').text().toLowerCase();
-      const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method'];
+      // Kata kunci diperluas untuk menangkap dokumentasi API modern
+      const keywords = [
+        'x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method',
+        'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'
+      ];
       if (keywords.some(kw => bodyText.includes(kw))) {
         discoveredHTML.add({ url: request.url, html: $.html() });
         console.log(`[SCRAPER-ENRICH] Found: ${request.url}`);
@@ -339,8 +369,24 @@ async function scrapeHTMLPagesForEnrich(base, timeout) {
   return [...discoveredHTML];
 }
 
-// Fungsi discoverWithAI (seperti sebelumnya, untuk fallback jika deterministic tidak dapat apa-apa)
+// Fungsi discoverWithAI (fallback jika deterministic tidak dapat apa-apa)
 async function discoverWithAI(domain, base, timeout) {
+  // Prioritas 1: /llms.txt
+  try {
+    const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (llmsRes.statusCode === 200 && llmsRes.body) {
+      const endpoints = await callSDS(llmsRes.body, 30000);
+      if (endpoints.length > 0) {
+        return endpoints.map(ep => ({
+          path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+          rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+          label: ep.label || ep.path, description: ep.description || '',
+        }));
+      }
+    }
+  } catch (err) {}
+
+  // Prioritas 2: well-known/x402
   try {
     const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (wkRes.statusCode === 200 && wkRes.body) {
@@ -355,6 +401,7 @@ async function discoverWithAI(domain, base, timeout) {
     }
   } catch (err) {}
 
+  // Prioritas 3: agent-card
   const agentPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
   for (const ap of agentPaths) {
     try {
@@ -452,26 +499,31 @@ for (const base of targetDomains) {
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
 
+    // 1. Deterministic
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
     if (candidates && candidates.length > 0) {
+      // 1b. Enrich dengan SDS (llms.txt → well-known → health → scraper)
       candidates = await enrichCandidatesWithAI(candidates, base, timeout);
       scanList = candidates;
       console.log(`[DISCOVERY] Deterministic + Enrich: ${candidates.length} endpoints`);
     } else {
+      // 2. AI discovery langsung (llms.txt → well-known → agent-card)
       candidates = await discoverWithAI(domain, base, timeout);
       if (candidates && candidates.length > 0) {
         scanList = candidates;
         console.log(`[DISCOVERY] AI found ${candidates.length} endpoints`);
       } else {
+        // 3. Scraper + SDS
         candidates = await discoverWithScraper(domain, base, timeout);
         if (candidates && candidates.length > 0) {
           scanList = candidates;
           console.log(`[DISCOVERY] Scraper found ${candidates.length} endpoints`);
         } else {
+          // 4. Dictionary fallback
           console.log('[DISCOVERY] Falling back to dictionary');
           scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
         }
