@@ -392,6 +392,16 @@ async function discoverWithScraper(domain, base, timeout) {
 // ========== ENDPOINT VERIFICATION ==========
 async function checkEndpoint(base, candidate, timeout) {
   const { path, method = 'GET' } = candidate;
+
+  if (path.startsWith('http://') || path.startsWith('https://')) {
+    try {
+      const parsed = new URL(path);
+      path = parsed.pathname + (parsed.search || '');
+    } catch (e) {
+      // Jika gagal di‑parse, biarkan apa adanya agar tidak merusak yang lain
+    }
+  }
+
   const url = `https://${base}${path}`;
   const start = Date.now();
   try {
