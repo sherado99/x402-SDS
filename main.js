@@ -251,6 +251,13 @@ function applyEnrichment(candidates, aiEndpoints) {
       const candPath = (candidate.path || '').toLowerCase().replace(/\/+$/, '');
       return aiPath === candPath;
     });
+
+    function applyEnrichment(candidates, aiEndpoints) {
+  console.log(`[APPLY] Mencocokkan ${aiEndpoints.length} endpoint AI ke ${candidates.length} kandidat...`);
+  // DEBUG: cetak 3 sample
+  console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
+  console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
+  // ... lanjut loop
     if (match) {
       console.log(`[APPLY] Match: ${candidate.path} → price=${match.price}, label=${match.label}`);
       if (!candidate.rawPrice && match.price) candidate.rawPrice = String(Math.round(match.price * 1000000));
