@@ -247,16 +247,17 @@ function applyEnrichment(candidates, aiEndpoints) {
   console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
   console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
 
-  // Helper untuk normalisasi path: ekstrak pathname jika URL absolut, lalu bersihkan
+  // Normalisasi agresif: ekstrak pathname jika URL absolut, hapus prefix /api, hapus trailing slash, lowercase
   const normalize = (rawPath) => {
     let p = rawPath || '';
-    // Jika URL absolut, ambil pathname saja
     if (p.startsWith('http://') || p.startsWith('https://')) {
       try {
         const url = new URL(p);
         p = url.pathname + (url.search || '');
-      } catch (e) { /* biarkan apa adanya */ }
+      } catch (e) {}
     }
+    // Hapus prefix /api (dengan atau tanpa trailing slash)
+    p = p.replace(/^\/api(?=\/)/i, '');
     // Hapus trailing slash, lowercase
     return p.replace(/\/+$/, '').toLowerCase();
   };
