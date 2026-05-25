@@ -13,5 +13,5 @@
     "name": "X402 Domain Scanner – API Payment Endpoint Discovery",
     "description": "Discover all X402 payment endpoints on any domain. Export structured datasheets, PDF, and DOCX. Built for API market intelligence and Web3 research."
   },
-  "useDockerImage": "apify/actor-node-puppeteer-chrome"
+  
 }
