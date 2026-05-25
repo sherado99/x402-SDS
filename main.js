@@ -28,7 +28,10 @@ function sha256(raw) {
 function normalizePath(rawPath) {
   let p = rawPath || '';
   if (p.startsWith('http://') || p.startsWith('https://')) {
-    try { const url = new URL(p); p = url.pathname + (url.search || ''); } catch (e) {}
+    try {
+      const url = new URL(p);
+      p = url.pathname + (url.search || '');
+    } catch (e) { /* keep as-is */ }
   }
   p = p.replace(/^\/api(?=\/)/i, '');
   return p.replace(/\/+$/, '').toLowerCase();
@@ -50,13 +53,14 @@ async function logFailure(base, stage, details) {
   }
 }
 
-// ========== REPORT GENERATION ==========
+// ========== DOCX/PDF GENERATION ==========
 async function generateDOCX(domain, results) {
   const children = [
     new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
     new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
     new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
   ];
+
   if (results.length === 0) {
     children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   } else {
@@ -75,6 +79,7 @@ async function generateDOCX(domain, results) {
       children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
     }
   }
+
   const doc = new Document({ sections: [{ properties: {}, children }] });
   return await Packer.toBuffer(doc);
 }
@@ -112,6 +117,7 @@ async function generatePDF(domain, results) {
         doc.moveDown(0.5);
       }
     }
+
     doc.end();
   });
 }
@@ -123,13 +129,19 @@ async function saveFileToKVS(filename, buffer, contentType) {
 }
 
 // ========== DETERMINISTIC DISCOVERY ==========
+
 async function discoverFromWellKnownAgent(base, timeout) {
   const paths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
   for (const wkPath of paths) {
     try {
       const response = await got(`https://${base}${wkPath}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
       if (response.statusCode !== 200) {
-        await logFailure(base, `agent-card:${wkPath}`, { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` });
+        await logFailure(base, `agent-card:${wkPath}`, {
+          httpStatus: response.statusCode,
+          contentType: response.headers['content-type'],
+          bodyPreview: response.body?.substring(0, 1000),
+          reason: `Non-200 status: ${response.statusCode}`
+        });
         continue;
       }
       const data = JSON.parse(response.body);
@@ -138,12 +150,19 @@ async function discoverFromWellKnownAgent(base, timeout) {
       for (const svc of services) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
-        candidates.push({ path, method: svc.method || 'GET', body: null, source: wkPath, rawPrice: String(svc.price || svc.cost || ''), network: svc.network || '', asset: svc.asset || '', label: svc.name || svc.id || '', description: svc.description || '' });
+        candidates.push({
+          path, method: svc.method || 'GET', body: null, source: wkPath,
+          rawPrice: String(svc.price || svc.cost || ''), network: svc.network || '',
+          asset: svc.asset || '', label: svc.name || svc.id || '', description: svc.description || '',
+        });
       }
       if (candidates.length > 0) return candidates;
     } catch (err) {
       console.log(`[AGENT-CARD] ${wkPath} error: ${err.message}`);
-      await logFailure(base, `agent-card:${wkPath}`, { error: err.message, reason: 'Parse or network error' });
+      await logFailure(base, `agent-card:${wkPath}`, {
+        error: err.message,
+        reason: 'Parse or network error'
+      });
     }
   }
   return null;
@@ -153,11 +172,17 @@ async function discoverFromWellKnownX402(base, timeout) {
   try {
     const response = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (response.statusCode !== 200) {
-      await logFailure(base, 'well-known-x402', { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` });
+      await logFailure(base, 'well-known-x402', {
+        httpStatus: response.statusCode,
+        contentType: response.headers['content-type'],
+        bodyPreview: response.body?.substring(0, 1000),
+        reason: `Non-200 status: ${response.statusCode}`
+      });
       return null;
     }
     const data = JSON.parse(response.body);
     const candidates = [];
+
     const extractPrice = (pricing) => {
       if (!pricing) return '';
       if (typeof pricing.price === 'number') return String(Math.round(pricing.price * 1000000));
@@ -169,36 +194,50 @@ async function discoverFromWellKnownX402(base, timeout) {
       if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1000000));
       return '';
     };
+
     if (data.resources && Array.isArray(data.resources)) {
       for (const res of data.resources) {
         if (typeof res === 'object' && res.path) {
           candidates.push({ path: res.path, method: res.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(res.pricing || res), network: res.network || data.network || '', asset: res.asset || data.asset || '', label: res.name || res.id || '', description: res.description || '' });
         } else if (typeof res === 'string') {
-          const parts = res.trim().split(' '); const method = parts.length > 1 ? parts[0] : 'GET'; const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+          const parts = res.trim().split(' ');
+          const method = parts.length > 1 ? parts[0] : 'GET';
+          const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
           candidates.push({ path, method, body: null, source: '/.well-known/x402', rawPrice: '', network: data.network || '', asset: data.asset || '', label: path, description: '' });
         }
       }
     }
+
     if (data.resourceDetails && Array.isArray(data.resourceDetails)) {
       for (const detail of data.resourceDetails) {
-        if (detail.path || detail.endpoint) candidates.push({ path: detail.path || detail.endpoint, method: detail.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(detail.pricing || detail), network: detail.network || data.network || '', asset: detail.asset || data.asset || '', label: detail.name || detail.label || detail.path || '', description: detail.description || '' });
+        if (detail.path || detail.endpoint) {
+          candidates.push({ path: detail.path || detail.endpoint, method: detail.method || 'GET', body: null, source: '/.well-known/x402', rawPrice: extractPrice(detail.pricing || detail), network: detail.network || data.network || '', asset: detail.asset || data.asset || '', label: detail.name || detail.label || detail.path || '', description: detail.description || '' });
+        }
       }
     }
+
     if (data.services && Array.isArray(data.services)) {
       for (const svc of data.services) {
-        const path = svc.endpoint || svc.path || svc.url; if (!path) continue;
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
         let rawPrice = extractPrice(svc.pricing || svc.price || {});
-        if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
+        if (!rawPrice && svc.models && Array.isArray(svc.models) && svc.models.length > 0) {
+          rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
+        }
         const payment = svc.payment || {};
         candidates.push({ path, method: svc.method || 'POST', body: null, source: '/.well-known/x402', rawPrice, network: payment.network || svc.network || data.network || '', asset: payment.asset || svc.asset || data.asset || '', label: svc.name || svc.id || svc.label || '', description: svc.description || '' });
       }
     }
+
     const unique = []; const seen = new Set();
     for (const c of candidates) { const key = `${c.path}|${c.method}`; if (!seen.has(key)) { seen.add(key); unique.push(c); } }
     return unique.length > 0 ? unique : null;
   } catch (err) {
     console.log(`[WELL-KNOWN-X402] Error: ${err.message}`);
-    await logFailure(base, 'well-known-x402', { error: err.message, reason: 'Parse or network error' });
+    await logFailure(base, 'well-known-x402', {
+      error: err.message,
+      reason: 'Parse or network error'
+    });
     return null;
   }
 }
@@ -208,12 +247,21 @@ async function discoverFromOpenAPI(base, timeout) {
   for (const apiPath of openApiPaths) {
     try {
       const response = await got(`https://${base}${apiPath}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-      if (response.statusCode !== 200) { await logFailure(base, `openapi:${apiPath}`, { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` }); continue; }
+      if (response.statusCode !== 200) {
+        await logFailure(base, `openapi:${apiPath}`, {
+          httpStatus: response.statusCode,
+          contentType: response.headers['content-type'],
+          bodyPreview: response.body?.substring(0, 1000),
+          reason: `Non-200 status: ${response.statusCode}`
+        });
+        continue;
+      }
       const spec = JSON.parse(response.body);
       if (!spec.paths) continue;
       const candidates = [];
       for (const [path, methods] of Object.entries(spec.paths)) {
-        const method = Object.keys(methods)[0] || 'GET'; const operation = methods[method];
+        const method = Object.keys(methods)[0] || 'GET';
+        const operation = methods[method];
         let price = '', network = '', asset = '', description = '';
         if (operation['x-payment-info']) { const pi = operation['x-payment-info']; price = String(pi.price || pi.amount || ''); network = pi.network || ''; asset = pi.asset || pi.token || ''; description = pi.description || ''; }
         const resp402 = operation.responses?.['402'];
@@ -225,7 +273,13 @@ async function discoverFromOpenAPI(base, timeout) {
         candidates.push({ path, method: method.toUpperCase(), body: null, source: apiPath, rawPrice: price, network, asset, label: operation.summary || operation.operationId || '', description: description || operation.description || '' });
       }
       return candidates.length > 0 ? candidates : null;
-    } catch (err) { console.log(`[OPENAPI] ${apiPath} error: ${err.message}`); await logFailure(base, `openapi:${apiPath}`, { error: err.message, reason: 'Parse or network error' }); }
+    } catch (err) {
+      console.log(`[OPENAPI] ${apiPath} error: ${err.message}`);
+      await logFailure(base, `openapi:${apiPath}`, {
+        error: err.message,
+        reason: 'Parse or network error'
+      });
+    }
   }
   return null;
 }
@@ -233,14 +287,23 @@ async function discoverFromOpenAPI(base, timeout) {
 async function discoverFromHealth(base, timeout) {
   try {
     const response = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-    if (response.statusCode !== 200) { await logFailure(base, 'health', { httpStatus: response.statusCode, contentType: response.headers['content-type'], bodyPreview: response.body?.substring(0, 1000), reason: `Non-200 status: ${response.statusCode}` }); return null; }
+    if (response.statusCode !== 200) {
+      await logFailure(base, 'health', {
+        httpStatus: response.statusCode,
+        contentType: response.headers['content-type'],
+        bodyPreview: response.body?.substring(0, 1000),
+        reason: `Non-200 status: ${response.statusCode}`
+      });
+      return null;
+    }
     const data = JSON.parse(response.body);
     const candidates = [];
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
       for (const [path, info] of Object.entries(data.endpoints)) {
-        if (!path) continue; let rawPrice = ''; const network = data.network || '';
-        if (typeof info.price === 'string') { const match = info.price.match(/\$([\d.]+)/); if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1000000)); else if (info.price === 'free' || info.price === '0') rawPrice = '0'; }
-        else if (typeof info.price === 'number') rawPrice = String(info.price);
+        if (!path) continue;
+        let rawPrice = ''; const network = data.network || '';
+        if (typeof info.price === 'string') { const match = info.price.match(/\$([\d.]+)/); if (match) { rawPrice = String(Math.round(parseFloat(match[1]) * 1000000)); } else if (info.price === 'free' || info.price === '0') { rawPrice = '0'; } }
+        else if (typeof info.price === 'number') { rawPrice = String(info.price); }
         candidates.push({ path, method: 'GET', body: null, source: '/health', rawPrice, network, asset: '', label: info.description || path, description: info.description || '' });
       }
     }
@@ -251,13 +314,22 @@ async function discoverFromHealth(base, timeout) {
       }
     }
     return candidates.length > 0 ? candidates : null;
-  } catch (err) { console.log(`[HEALTH] Error: ${err.message}`); await logFailure(base, 'health', { error: err.message, reason: 'Parse or network error' }); return null; }
+  } catch (err) {
+    console.log(`[HEALTH] Error: ${err.message}`);
+    await logFailure(base, 'health', {
+      error: err.message,
+      reason: 'Parse or network error'
+    });
+    return null;
+  }
 }
 
 // ========== SDS HELPER ==========
 async function callSDS(content, timeout) {
   const finalContent = content.substring(0, 15000);
-  const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', { json: { content: finalContent }, timeout: { request: timeout }, throwHttpErrors: false });
+  const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
+    json: { content: finalContent }, timeout: { request: timeout }, throwHttpErrors: false,
+  });
   if (sdsResponse.statusCode !== 200) return [];
   return JSON.parse(sdsResponse.body);
 }
@@ -266,6 +338,7 @@ function applyEnrichment(candidates, aiEndpoints) {
   console.log(`[APPLY] Matching ${aiEndpoints.length} AI endpoints to ${candidates.length} candidates...`);
   console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
   console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
+
   for (const candidate of candidates) {
     const candPath = normalizePath(candidate.path);
     const match = aiEndpoints.find(ai => normalizePath(ai.path) === candPath);
@@ -286,40 +359,66 @@ function applyEnrichment(candidates, aiEndpoints) {
 async function enrichCandidatesWithAI(candidates, base, timeout) {
   console.log('[ENRICH] Trying to enrich candidates...');
 
+  // Priority 1: /llms.txt
   console.log('[ENRICH] Fetching /llms.txt...');
   let rawContent = '';
-  try { const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (llmsRes.statusCode === 200) rawContent = llmsRes.body; } catch (err) {}
-  if (rawContent) { const aiEndpoints = await callSDS(rawContent, 30000); console.log(`[ENRICH] /llms.txt: SDS returned ${aiEndpoints.length} endpoints`); if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints); }
-  else console.log('[ENRICH] /llms.txt not available');
+  try {
+    const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (llmsRes.statusCode === 200) rawContent = llmsRes.body;
+  } catch (err) {}
+  if (rawContent) {
+    const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /llms.txt: SDS returned ${aiEndpoints.length} endpoints`);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+    }
+  } else {
+    console.log('[ENRICH] /llms.txt not available');
+  }
 
+  // Priority 2: /.well-known/x402
   console.log('[ENRICH] Fetching /.well-known/x402...');
   rawContent = '';
-  try { const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (wkRes.statusCode === 200) rawContent = wkRes.body; } catch (err) {}
-  if (rawContent) { const aiEndpoints = await callSDS(rawContent, 30000); console.log(`[ENRICH] /.well-known/x402: SDS returned ${aiEndpoints.length} endpoints`); if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints); }
+  try {
+    const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (wkRes.statusCode === 200) rawContent = wkRes.body;
+  } catch (err) {}
+  if (rawContent) {
+    const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /.well-known/x402: SDS returned ${aiEndpoints.length} endpoints`);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+    }
+  }
 
+  // Priority 3: /health
   console.log('[ENRICH] Fetching /health...');
   rawContent = '';
-  try { const healthRes = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (healthRes.statusCode === 200) rawContent = healthRes.body; } catch (err) {}
-  if (rawContent) { const aiEndpoints = await callSDS(rawContent, 30000); console.log(`[ENRICH] /health: SDS returned ${aiEndpoints.length} endpoints`); if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints); }
+  try {
+    const healthRes = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (healthRes.statusCode === 200) rawContent = healthRes.body;
+  } catch (err) {}
+  if (rawContent) {
+    const aiEndpoints = await callSDS(rawContent, 30000);
+    console.log(`[ENRICH] /health: SDS returned ${aiEndpoints.length} endpoints`);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+    }
+  }
 
+  // Priority 4: Static HTML scraper (Cheerio)
   console.log('[ENRICH] Running static HTML scraper...');
   const staticPages = await scrapeStaticPages(base, timeout);
   if (staticPages.length > 0) {
     let combinedHTML = '';
-    for (const page of staticPages) combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
+    for (const page of staticPages) {
+      combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
+    }
     const aiEndpoints = await callSDS(combinedHTML, 60000);
     console.log(`[ENRICH] Static scraper: SDS returned ${aiEndpoints.length} endpoints`);
-    if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints);
-  }
-
-  console.log('[ENRICH] Running JS-rendered scraper via Apify Web Scraper...');
-  const dynamicPages = await scrapeDynamicViaActor(base);
-  if (dynamicPages.length > 0) {
-    let combinedHTML = '';
-    for (const page of dynamicPages) combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
-    const aiEndpoints = await callSDS(combinedHTML, 60000);
-    console.log(`[ENRICH] Dynamic scraper: SDS returned ${aiEndpoints.length} endpoints`);
-    if (aiEndpoints.length > 0) applyEnrichment(candidates, aiEndpoints);
+    if (aiEndpoints.length > 0) {
+      applyEnrichment(candidates, aiEndpoints);
+    }
   }
 
   return candidates;
@@ -327,12 +426,22 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
 
 // ========== STATIC SCRAPER ==========
 async function scrapeStaticPages(base, timeout) {
-  const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
+  const startUrls = [
+    `https://${base}`,
+    `https://${base}/docs`,
+    `https://${base}/api`,
+    `https://${base}/developers`,
+    `https://${base}/pricing`
+  ];
   const discoveredHTML = new Set();
-  const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
+  const keywords = [
+    'x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method',
+    'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'
+  ];
 
   const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 20, requestHandlerTimeoutSecs: 30,
+    maxRequestsPerCrawl: 20,
+    requestHandlerTimeoutSecs: 30,
     async requestHandler({ request, $, enqueueLinks }) {
       const bodyText = $('body').text().toLowerCase();
       const matched = keywords.filter(kw => bodyText.includes(kw));
@@ -340,84 +449,116 @@ async function scrapeStaticPages(base, timeout) {
         discoveredHTML.add({ url: request.url, html: $.html() });
         console.log(`[STATIC-SCRAPER] Found: ${request.url}`);
       } else {
-        await logFailure(base, 'static-scraper', { url: request.url, reason: 'No relevant keywords found in static HTML', bodyPreview: bodyText.substring(0, 1000), missingKeywords: keywords.filter(kw => !bodyText.includes(kw)).join(', ') });
+        await logFailure(base, 'static-scraper', {
+          url: request.url,
+          reason: 'No relevant keywords found in static HTML',
+          bodyPreview: bodyText.substring(0, 1000),
+          missingKeywords: keywords.filter(kw => !bodyText.includes(kw)).join(', '),
+        });
       }
-      await enqueueLinks({ transformRequestFunction(req) { const linkText = ($(`a[href="${req.url}"]`).text() || '').toLowerCase(); if (keywords.some(kw => linkText.includes(kw))) return req; return false; } });
+      await enqueueLinks({
+        transformRequestFunction(req) {
+          const linkText = ($(`a[href="${req.url}"]`).text() || '').toLowerCase();
+          if (keywords.some(kw => linkText.includes(kw))) return req;
+          return false;
+        },
+      });
     },
   });
   await crawler.run(startUrls);
   return [...discoveredHTML];
 }
 
-// ========== DYNAMIC SCRAPER VIA APIFY ACTOR ==========
-async function scrapeDynamicViaActor(base) {
-  const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
-
-  try {
-    const run = await Actor.call('apify/web-scraper', {
-      startUrls: startUrls.map(url => ({ url })),
-      pageFunction: async ({ page }) => {
-        await page.waitForTimeout(3000);
-        const html = await page.content();
-        const text = await page.evaluate(() => document.body.innerText.toLowerCase());
-        const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
-        const matched = keywords.filter(kw => text.includes(kw));
-        if (matched.length > 0) {
-          return { url: page.url(), html, matched };
-        }
-        return null;
-      },
-      maxPagesPerCrawl: 10,
-      proxyConfiguration: { useApifyProxy: true },
-    });
-
-    const dataset = await Actor.openDataset(run.defaultDatasetId);
-    const items = await dataset.getData();
-    const pages = [];
-    for (const item of items.items) {
-      if (item && item.html && item.url) {
-        pages.push({ url: item.url, html: item.html });
-        console.log(`[DYNAMIC-SCRAPER] Found via Actor: ${item.url}`);
-      }
-    }
-    return pages;
-  } catch (err) {
-    console.error(`[DYNAMIC-SCRAPER] Actor call failed: ${err.message}`);
-    return [];
-  }
-}
-
 // ========== DISCOVERY FALLBACKS ==========
 async function discoverWithAI(domain, base, timeout) {
-  try { const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (llmsRes.statusCode === 200 && llmsRes.body) { const endpoints = await callSDS(llmsRes.body, 30000); if (endpoints.length > 0) return endpoints.map(ep => ({ path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai', rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '', label: ep.label || ep.path, description: ep.description || '' })); } } catch (err) {}
-  try { const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (wkRes.statusCode === 200 && wkRes.body) { const endpoints = await callSDS(wkRes.body, 30000); if (endpoints.length > 0) return endpoints.map(ep => ({ path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai', rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '', label: ep.label || ep.path, description: ep.description || '' })); } } catch (err) {}
+  // Priority 1: /llms.txt
+  try {
+    const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (llmsRes.statusCode === 200 && llmsRes.body) {
+      const endpoints = await callSDS(llmsRes.body, 30000);
+      if (endpoints.length > 0) {
+        return endpoints.map(ep => ({
+          path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+          rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+          label: ep.label || ep.path, description: ep.description || '',
+        }));
+      }
+    }
+  } catch (err) {}
+
+  // Priority 2: /.well-known/x402
+  try {
+    const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (wkRes.statusCode === 200 && wkRes.body) {
+      const endpoints = await callSDS(wkRes.body, 30000);
+      if (endpoints.length > 0) {
+        return endpoints.map(ep => ({
+          path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+          rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+          label: ep.label || ep.path, description: ep.description || '',
+        }));
+      }
+    }
+  } catch (err) {}
+
+  // Priority 3: agent-card
   const agentPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
-  for (const ap of agentPaths) { try { const agentRes = await got(`https://${base}${ap}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } }); if (agentRes.statusCode === 200 && agentRes.body) { const endpoints = await callSDS(agentRes.body, 30000); if (endpoints.length > 0) return endpoints.map(ep => ({ path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai', rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '', label: ep.label || ep.path, description: ep.description || '' })); } } catch (err) {} }
+  for (const ap of agentPaths) {
+    try {
+      const agentRes = await got(`https://${base}${ap}`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+      if (agentRes.statusCode === 200 && agentRes.body) {
+        const endpoints = await callSDS(agentRes.body, 30000);
+        if (endpoints.length > 0) {
+          return endpoints.map(ep => ({
+            path: ep.path, method: ep.method || 'GET', body: null, source: 'sds-ai',
+            rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+            label: ep.label || ep.path, description: ep.description || '',
+          }));
+        }
+      }
+    } catch (err) {}
+  }
+
   return null;
 }
 
 async function discoverWithScraper(domain, base, timeout) {
   const staticPages = await scrapeStaticPages(base, timeout);
-  const dynamicPages = await scrapeDynamicViaActor(base);
-  const allPages = [...staticPages, ...dynamicPages];
-  if (allPages.length === 0) return null;
+  if (staticPages.length === 0) return null;
+
   let combinedHTML = '';
-  for (const page of allPages) combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
+  for (const page of staticPages) {
+    combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
+  }
   const endpoints = await callSDS(combinedHTML.substring(0, 15000), 60000);
-  if (endpoints.length > 0) return endpoints.map(ep => ({ path: ep.path, method: ep.method || 'GET', body: null, source: 'scraper-ai', rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '', label: ep.label || ep.path, description: ep.description || '' }));
+  if (endpoints.length > 0) {
+    return endpoints.map(ep => ({
+      path: ep.path, method: ep.method || 'GET', body: null, source: 'scraper-ai',
+      rawPrice: String(Math.round((ep.price || 0) * 1000000)), network: ep.network || '', asset: ep.asset || '',
+      label: ep.label || ep.path, description: ep.description || '',
+    }));
+  }
   return null;
 }
 
 // ========== ENDPOINT VERIFICATION ==========
 async function checkEndpoint(base, candidate, timeout) {
   let { path, method = 'GET' } = candidate;
-  if (path && (path.startsWith('http://') || path.startsWith('https://'))) { try { const parsed = new URL(path); path = parsed.pathname + (parsed.search || ''); } catch (e) {} }
+
+  if (path && (path.startsWith('http://') || path.startsWith('https://'))) {
+    try {
+      const parsed = new URL(path);
+      path = parsed.pathname + (parsed.search || '');
+    } catch (e) {}
+  }
+
   const url = `https://${base}${path}`;
   const start = Date.now();
   try {
     const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' } });
     const httpStatus = response.statusCode; const responseTime = Date.now() - start;
     const bodyHash = sha256(response.body);
+
     if (httpStatus === 402) {
       try {
         const responseBody = JSON.parse(response.body);
@@ -429,6 +570,7 @@ async function checkEndpoint(base, candidate, timeout) {
         }
       } catch (err) {}
     }
+
     const rawPrice = candidate.rawPrice || '';
     const priceReadable = rawPrice ? `$${(parseInt(rawPrice, 10) / 1000000).toFixed(6)}` : '';
     return { domain: base, path, status: 'public_info', x402Version: '', price: rawPrice, priceReadable, network: candidate.network || '', asset: candidate.asset || '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
@@ -447,34 +589,44 @@ const targetDomains = [normalizeDomain(domain)];
 if (includeSubdomains) targetDomains.push(`api.${normalizeDomain(domain)}`);
 
 const results = [];
+
 for (const base of targetDomains) {
   let scanList = [];
+
   if (manualPaths && manualPaths.trim()) {
     const paths = manualPaths.split('\n').map(p => p.trim()).filter(p => p);
     scanList = paths.map(p => ({ path: p, method: 'GET', body: null }));
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
+
+    // 1. Deterministic
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
     if (candidates && candidates.length > 0) {
+      // 1b. Enrich via SDS
       candidates = await enrichCandidatesWithAI(candidates, base, timeout);
       scanList = candidates;
       console.log(`[DISCOVERY] Deterministic + Enrich: ${candidates.length} endpoints`);
     } else {
+      // 2. AI discovery
       candidates = await discoverWithAI(domain, base, timeout);
       if (candidates && candidates.length > 0) {
         scanList = candidates;
         console.log(`[DISCOVERY] AI found ${candidates.length} endpoints`);
       } else {
+        // 3. Scraper
         candidates = await discoverWithScraper(domain, base, timeout);
         if (candidates && candidates.length > 0) {
           scanList = candidates;
           console.log(`[DISCOVERY] Scraper found ${candidates.length} endpoints`);
         } else {
-          await logFailure(base, 'all-methods', { reason: 'All discovery methods exhausted, falling back to dictionary' });
+          // 4. Dictionary fallback
+          await logFailure(base, 'all-methods', {
+            reason: 'All discovery methods exhausted, falling back to dictionary',
+          });
           console.log('[DISCOVERY] Falling back to dictionary');
           scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
         }
@@ -494,7 +646,9 @@ const docxBuffer = await generateDOCX(domain, results);
 const pdfBuffer = await generatePDF(domain, results);
 const docxUrl = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 const pdfUrl = await saveFileToKVS('OUTPUT.pdf', pdfBuffer, 'application/pdf');
+
 const finalOutput = results.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
 await Actor.pushData(finalOutput);
 console.log(`Scan complete. ${finalOutput.length} endpoints found.`);
+
 await Actor.exit();
