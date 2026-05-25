@@ -389,16 +389,18 @@ async function discoverWithScraper(domain, base, timeout) {
   return null;
 }
 
+
 // ========== ENDPOINT VERIFICATION ==========
 async function checkEndpoint(base, candidate, timeout) {
-  const { path, method = 'GET' } = candidate;
+  let { path, method = 'GET' } = candidate;
 
-  if (path.startsWith('http://') || path.startsWith('https://')) {
+  // ✅ Pembersihan: kalau path masih berbentuk URL lengkap, ambil bagian path-nya saja
+  if (path && (path.startsWith('http://') || path.startsWith('https://'))) {
     try {
       const parsed = new URL(path);
       path = parsed.pathname + (parsed.search || '');
     } catch (e) {
-      // Jika gagal di‑parse, biarkan apa adanya agar tidak merusak yang lain
+      // Jika gagal di-parse, biarkan apa adanya
     }
   }
 
