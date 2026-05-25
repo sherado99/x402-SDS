@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "X402 Domain Scanner",
   "version": "0.0.1",
-  "buildTag": "latest",
+  "buildTag": "puppeteer-chrome",
   "description": "Scan a root domain for all X402 payment endpoints and export a structured datasheet with PDF and DOCX reports. Built for API developers, market analysts, and Web3 researchers.",
   "input": "./input_schema.json",
   "output": "./output_schema.json",
@@ -12,5 +12,6 @@
   "seo": {
     "name": "X402 Domain Scanner – API Payment Endpoint Discovery",
     "description": "Discover all X402 payment endpoints on any domain. Export structured datasheets, PDF, and DOCX. Built for API market intelligence and Web3 research."
-  }
+  },
+  "useDockerImage": "apify/actor-node-puppeteer-chrome"
 }
