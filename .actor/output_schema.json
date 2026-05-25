@@ -68,6 +68,12 @@
       "title": "Description",
       "template": "{{description}}"
     },
+    "auditHash": {
+      "type": "string",
+      "description": "SHA-256 hash of the raw response body for verifiable claims.",
+      "title": "Audit Hash",
+      "template": "{{auditHash}}"
+    },
     "httpStatus": {
       "type": "string",
       "description": "HTTP status code returned by the endpoint.",
@@ -105,5 +111,5 @@
       "template": "{{download_pdf}}"
     }
   },
-  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable"]
+  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
 }
