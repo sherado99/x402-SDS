@@ -31,7 +31,34 @@ if (p.startsWith('http://') || p.startsWith('https://')) {
 
 function parsePathsInput(pathsInput) { if (!pathsInput) return []; return String(pathsInput) .split(/\r?\n/g) .map((x) => x.trim()) .filter(Boolean) .map(normalizePath); }
 
-function uniqCandidates(candidates = []) { const seen = new Set(); const out = []; for (const c of candidates) { if (!c?.path) continue; const key = ${String(c.method || 'GET').toUpperCase()}:${normalizePath(c.path)}; if (seen.has(key)) continue; seen.add(key); out.push({ path: normalizePath(c.path), method: String(c.method || 'GET').toUpperCase(), rawPrice: String(c.rawPrice || c.price || ''), network: String(c.network || ''), asset: String(c.asset || ''), payTo: String(c.payTo || ''), label: String(c.label || ''), description: String(c.description || ''), source: String(c.source || 'unknown'), }); } return out; }
+function uniqCandidates(candidates = []) {
+    const seen = new Set();
+    const out = [];
+
+    for (const c of candidates) {
+        if (!c?.path) continue;
+
+        const key = `${String(c.method || 'GET').toUpperCase()}:${normalizePath(c.path)}`;
+
+        if (seen.has(key)) continue;
+
+        seen.add(key);
+
+        out.push({
+            path: normalizePath(c.path),
+            method: String(c.method || 'GET').toUpperCase(),
+            rawPrice: String(c.rawPrice || c.price || ''),
+            network: String(c.network || ''),
+            asset: String(c.asset || ''),
+            payTo: String(c.payTo || ''),
+            label: String(c.label || ''),
+            description: String(c.description || ''),
+            source: String(c.source || 'unknown'),
+        });
+    }
+
+    return out;
+}
 
 function cheapExtractPrice(text) { const match = String(text || '').match(/$\s*([\d.]+)/i); return match ? String(Math.round(parseFloat(match[1]) * 1_000_000)) : ''; }
 
