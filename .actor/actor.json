@@ -2,7 +2,7 @@
   "actorSpecification": 1,
   "name": "X402 Domain Scanner",
   "version": "0.0.1",
-  "buildTag": "puppeteer-chrome",
+  "buildTag": "latest",
   "description": "Scan a root domain for all X402 payment endpoints and export a structured datasheet with PDF and DOCX reports. Built for API developers, market analysts, and Web3 researchers.",
   "input": "./input_schema.json",
   "output": "./output_schema.json",
