@@ -242,6 +242,44 @@ async function callSDS(content, timeout) {
   return JSON.parse(sdsResponse.body);
 }
 
+async function enrichWithAI(candidates, base, timeout) {
+  // Cek apakah ada candidate yang miskin data (tanpa harga, label, deskripsi)
+  const needsEnrichment = candidates.some(c => !c.rawPrice && !c.label && !c.description);
+  if (!needsEnrichment) return candidates; // sudah lengkap
+
+  // Ambil konten mentah dari well-known/x402 atau health untuk diberikan ke SDS
+  let rawContent = '';
+  try {
+    const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+    if (wkRes.statusCode === 200) rawContent = wkRes.body;
+  } catch (err) {}
+  if (!rawContent) {
+    try {
+      const healthRes = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
+      if (healthRes.statusCode === 200) rawContent = healthRes.body;
+    } catch (err) {}
+  }
+  if (!rawContent) return candidates; // tidak ada yang bisa memperkaya
+
+  const aiEndpoints = await callSDS(rawContent, 30000);
+  if (aiEndpoints.length === 0) return candidates;
+
+  // Gabungkan: cocokkan path, isi yang kosong
+  for (const candidate of candidates) {
+    const match = aiEndpoints.find(ai => ai.path === candidate.path);
+    if (match) {
+      if (!candidate.rawPrice && match.price) candidate.rawPrice = String(Math.round(match.price * 1000000));
+      if (!candidate.label && match.label) candidate.label = match.label;
+      if (!candidate.description && match.description) candidate.description = match.description;
+      if (!candidate.network && match.network) candidate.network = match.network;
+      if (!candidate.asset && match.asset) candidate.asset = match.asset;
+      candidate.source = `${candidate.source}+sds-enrich`;
+    }
+  }
+
+  return candidates;
+}
+
 async function discoverWithAI(domain, base, timeout) {
   // Prioritas 1: well-known/x402 langsung
   try {
@@ -440,6 +478,8 @@ for (const base of targetDomains) {
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
     if (candidates && candidates.length > 0) {
+      // PERBAIKAN: Coba enrich dengan AI sebelum verifikasi
+      candidates = await enrichWithAI(candidates, base, timeout);
       scanList = candidates;
       console.log(`[DISCOVERY] Deterministic found ${candidates.length} endpoints`);
     } else {
