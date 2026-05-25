@@ -1,4 +1,4 @@
-import { Actor } from 'apify'; import { CheerioCrawler } from 'crawlee'; import got from 'got'; import crypto from 'crypto'; import fs from 'fs/promises'; import { Document, Packer, Paragraph, HeadingLevel } from 'docx'; import PDFDocument from 'pdfkit';
+I'mimport { Actor } from 'apify'; import { CheerioCrawler } from 'crawlee'; import got from 'got'; import crypto from 'crypto'; import fs from 'fs/promises'; import { Document, Packer, Paragraph, HeadingLevel } from 'docx'; import PDFDocument from 'pdfkit';
 
 await Actor.init();
 
@@ -12,7 +12,14 @@ function sha256(raw) { return crypto.createHash('sha256').update(String(raw || '
 
 function normalizePath(rawPath) { let p = String(rawPath || '').trim(); if (!p) return '';
 
-if (p.startsWith('http://') || p.startsWith('https://')) { try { const url = new URL(p); p = '${url.pathname}${url.search || ''}'; } catch { // ignore } }
+if (p.startsWith('http://') || p.startsWith('https://')) {
+    try {
+        const url = new URL(p);
+        p = `${url.pathname}${url.search || ''}`;
+    } catch {
+        // ignore
+    }
+}
 
 // keep well-known paths intact p = p.replace(/^/api(?=/)/i, ''); p = p.replace(//+/g, '/'); p = p.replace(//+$/, ''); if (!p.startsWith('/')) p = /${p}; return p.toLowerCase(); }
 
