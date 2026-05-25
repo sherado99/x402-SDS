@@ -483,49 +483,30 @@ async function discoverWithAI(domain, base, timeout) {
     }
 
     const data = JSON.parse(wkResponse.body);
-    let finalContent = '';
-
-    if (data.services && Array.isArray(data.services)) {
-      let servicesToSend = data.services;
-      if (servicesToSend.length > 10) {
-        servicesToSend = servicesToSend.slice(0, 10);
-        console.log(`[AI-DISCOVERY] Trimmed services from ${data.services.length} to 10`);
-      }
-      finalContent = JSON.stringify(servicesToSend);
-      console.log(`[AI-DISCOVERY] Sending services array: ${finalContent.length} chars`);
-    } else {
-      const discoveryUrls = [
-        `https://${base}/.well-known/agent-card.json`,
-        `https://${base}/.well-known/agent.json`,
-        `https://${base}/.well-known/agent-services.json`,
-        `https://${base}/openapi.json`,
-        `https://${base}/health`,
-      ];
-
-      let combinedContent = '';
-      for (const url of discoveryUrls) {
-        try {
-          const resp = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
-          if (resp.statusCode === 200) {
-            const filtered = filterRelevantContent(resp.body, 6000);
-            if (filtered) {
-              combinedContent += `\n--- From ${url} ---\n${filtered}`;
-            }
-          }
-        } catch (err) {
-          // skip
-        }
-      }
-      finalContent = combinedContent.substring(0, 15000);
-    }
-
-    if (!finalContent.trim()) {
-      console.log('[AI-DISCOVERY] No content to send to AI');
+    
+    // Hanya kirim ke AI jika ada services dengan pricing rumit
+    if (!data.services || !Array.isArray(data.services) || data.services.length === 0) {
+      console.log('[AI-DISCOVERY] No services array found');
       return null;
     }
 
+    // Ambil layanan pertama yang punya models
+    const serviceWithModels = data.services.find(svc => svc.models && Array.isArray(svc.models) && svc.models.length > 0);
+    if (!serviceWithModels) {
+      console.log('[AI-DISCOVERY] No service with models found');
+      return null;
+    }
+
+    // Kirim hanya models array dari satu layanan — ini sangat kecil
+    const modelsContent = JSON.stringify({
+      endpoint: serviceWithModels.endpoint,
+      models: serviceWithModels.models.slice(0, 10) // maks 10 model
+    });
+    
+    console.log(`[AI-DISCOVERY] Sending models array: ${modelsContent.length} chars`);
+
     const sdsResponse = await got.post('https://stech-api.sheradogilang.workers.dev/x402/sds', {
-      json: { content: finalContent },
+      json: { content: modelsContent },
       timeout: { request: 60000 },
       throwHttpErrors: false,
     });
@@ -535,20 +516,46 @@ async function discoverWithAI(domain, base, timeout) {
       return null;
     }
 
-    const endpoints = JSON.parse(sdsResponse.body);
-    console.log(`[AI-DISCOVERY] SDS extracted ${endpoints.length} endpoints`);
+    const models = JSON.parse(sdsResponse.body);
+    console.log(`[AI-DISCOVERY] SDS extracted ${models.length} models`);
 
-    return endpoints.map(ep => ({
-      path: ep.path,
-      method: ep.method || 'GET',
-      body: null,
-      source: 'sds-ai',
-      rawPrice: String(Math.round((ep.price || 0) * 1000000)),
-      network: ep.network || '',
-      asset: ep.asset || '',
-      label: ep.label || ep.path,
-      description: ep.description || '',
-    }));
+    // Gabungkan dengan endpoint dari services
+    const candidates = [];
+    for (const svc of data.services.slice(0, 10)) { // maks 10 layanan
+      if (svc.models && Array.isArray(svc.models)) {
+        // Cari model yang sudah diekstrak harganya oleh AI
+        for (const model of svc.models) {
+          const aiModel = models.find(m => m.label && m.label.includes(model.name || model.id || ''));
+          const price = aiModel ? String(Math.round((aiModel.price || 0) * 1000000)) : '';
+          
+          candidates.push({
+            path: svc.endpoint || svc.path || '',
+            method: svc.method || 'POST',
+            body: null,
+            source: 'sds-ai',
+            rawPrice: price,
+            network: (svc.payment || {}).network || data.network || '',
+            asset: (svc.payment || {}).asset || data.asset || '',
+            label: `${svc.name || ''} - ${model.name || model.id || ''}`,
+            description: model.description || svc.description || '',
+          });
+        }
+      } else {
+        candidates.push({
+          path: svc.endpoint || svc.path || '',
+          method: svc.method || 'POST',
+          body: null,
+          source: 'sds-ai',
+          rawPrice: '',
+          network: (svc.payment || {}).network || data.network || '',
+          asset: (svc.payment || {}).asset || data.asset || '',
+          label: svc.name || svc.id || '',
+          description: svc.description || '',
+        });
+      }
+    }
+
+    return candidates.length > 0 ? candidates : null;
   } catch (err) {
     console.log(`[AI-DISCOVERY] Error: ${err.message}`);
     return null;
