@@ -1,6 +1,7 @@
 import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
+import crypto from 'crypto';
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
 
@@ -21,6 +22,24 @@ function normalizeDomain(d) {
   return d.replace(/\/+$/, '').trim();
 }
 
+function sha256(raw) {
+  return crypto.createHash('sha256').update(raw || '').digest('hex');
+}
+
+function normalizePath(rawPath) {
+  let p = rawPath || '';
+  if (p.startsWith('http://') || p.startsWith('https://')) {
+    try {
+      const url = new URL(p);
+      p = url.pathname + (url.search || '');
+    } catch (e) { /* keep as-is */ }
+  }
+  // Remove /api prefix if present (handles cases like /api/v1/...)
+  p = p.replace(/^\/api(?=\/)/i, '');
+  // Remove trailing slash, lowercase
+  return p.replace(/\/+$/, '').toLowerCase();
+}
+
 async function generateDOCX(domain, results) {
   const children = [
     new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
@@ -39,6 +58,7 @@ async function generateDOCX(domain, results) {
         if (row.asset) children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
         if (row.payTo) children.push(new Paragraph({ text: `Pay To: ${row.payTo}`, spacing: { after: 40 } }));
         if (row.description) children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
+        if (row.auditHash) children.push(new Paragraph({ text: `Audit Hash: ${row.auditHash}`, spacing: { after: 40 } }));
       } else if (row.errorMessage) {
         children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
       }
@@ -75,6 +95,7 @@ async function generatePDF(domain, results) {
           if (row.asset) doc.fontSize(10).text(`Asset: ${row.asset}`);
           if (row.payTo) doc.fontSize(10).text(`Pay To: ${row.payTo}`);
           if (row.description) doc.fontSize(10).text(`Description: ${row.description}`);
+          if (row.auditHash) doc.fontSize(10).text(`Audit Hash: ${row.auditHash}`);
         } else if (row.errorMessage) {
           doc.fontSize(10).text(`Error: ${row.errorMessage}`);
         }
@@ -93,7 +114,7 @@ async function saveFileToKVS(filename, buffer, contentType) {
   return `https://api.apify.com/v2/key-value-stores/${store.id}/records/${filename}?disableRedirect=true`;
 }
 
-// ========== DETERMINISTIC DISCOVERY (TIDAK BERUBAH) ==========
+// ========== DETERMINISTIC DISCOVERY ==========
 
 async function discoverFromWellKnownAgent(base, timeout) {
   const paths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
@@ -243,29 +264,14 @@ async function callSDS(content, timeout) {
 }
 
 function applyEnrichment(candidates, aiEndpoints) {
-  console.log(`[APPLY] Mencocokkan ${aiEndpoints.length} endpoint AI ke ${candidates.length} kandidat...`);
+  console.log(`[APPLY] Matching ${aiEndpoints.length} AI endpoints to ${candidates.length} candidates...`);
   console.log('[APPLY] Sample AI paths:', aiEndpoints.slice(0,3).map(e => e.path));
   console.log('[APPLY] Sample candidate paths:', candidates.slice(0,3).map(c => c.path));
 
-  // Normalisasi agresif: ekstrak pathname jika URL absolut, hapus prefix /api, hapus trailing slash, lowercase
-  const normalize = (rawPath) => {
-    let p = rawPath || '';
-    if (p.startsWith('http://') || p.startsWith('https://')) {
-      try {
-        const url = new URL(p);
-        p = url.pathname + (url.search || '');
-      } catch (e) {}
-    }
-    // Hapus prefix /api (dengan atau tanpa trailing slash)
-    p = p.replace(/^\/api(?=\/)/i, '');
-    // Hapus trailing slash, lowercase
-    return p.replace(/\/+$/, '').toLowerCase();
-  };
-
   for (const candidate of candidates) {
-    const candPath = normalize(candidate.path);
+    const candPath = normalizePath(candidate.path);
     const match = aiEndpoints.find(ai => {
-      const aiPath = normalize(ai.path);
+      const aiPath = normalizePath(ai.path);
       return aiPath === candPath;
     });
     if (match) {
@@ -275,23 +281,17 @@ function applyEnrichment(candidates, aiEndpoints) {
       if (!candidate.description && match.description) candidate.description = match.description;
       if (!candidate.network && match.network) candidate.network = match.network;
       if (!candidate.asset && match.asset) candidate.asset = match.asset;
+      if (!candidate.payTo && match.payTo) candidate.payTo = match.payTo;
       candidate.source = `${candidate.source}+sds-enrich`;
     }
   }
 }
-/**
- * Enrich kandidat dengan AI, mencoba berbagai sumber secara bertahap.
- * Prioritas:
- * 1. /llms.txt (standar baru dokumentasi API ramah AI)
- * 2. /.well-known/x402
- * 3. /health
- * 4. Scraper HTML dengan kata kunci yang diperluas
- */
-async function enrichCandidatesWithAI(candidates, base, timeout) {
-  console.log('[ENRICH] Mencoba melengkapi data...');
 
-  // Prioritas 1: /llms.txt
-  console.log('[ENRICH] Mencoba /llms.txt...');
+async function enrichCandidatesWithAI(candidates, base, timeout) {
+  console.log('[ENRICH] Trying to enrich candidates...');
+
+  // Priority 1: /llms.txt
+  console.log('[ENRICH] Fetching /llms.txt...');
   let rawContent = '';
   try {
     const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
@@ -299,15 +299,14 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   } catch (err) {}
   if (rawContent) {
     const aiEndpoints = await callSDS(rawContent, 30000);
-    console.log(`[ENRICH] /llms.txt: SDS kembalikan ${aiEndpoints.length} endpoint`);
+    console.log(`[ENRICH] /llms.txt: SDS returned ${aiEndpoints.length} endpoints`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
-      // Jangan return dulu, biarkan sumber lain juga memperkaya
     }
   }
 
-  // Prioritas 2: /.well-known/x402
-  console.log('[ENRICH] Mencoba /.well-known/x402...');
+  // Priority 2: /.well-known/x402
+  console.log('[ENRICH] Fetching /.well-known/x402...');
   rawContent = '';
   try {
     const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
@@ -315,14 +314,14 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   } catch (err) {}
   if (rawContent) {
     const aiEndpoints = await callSDS(rawContent, 30000);
-    console.log(`[ENRICH] /.well-known/x402: SDS kembalikan ${aiEndpoints.length} endpoint`);
+    console.log(`[ENRICH] /.well-known/x402: SDS returned ${aiEndpoints.length} endpoints`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
     }
   }
 
-  // Prioritas 3: /health
-  console.log('[ENRICH] Mencoba /health...');
+  // Priority 3: /health
+  console.log('[ENRICH] Fetching /health...');
   rawContent = '';
   try {
     const healthRes = await got(`https://${base}/health`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
@@ -330,22 +329,22 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   } catch (err) {}
   if (rawContent) {
     const aiEndpoints = await callSDS(rawContent, 30000);
-    console.log(`[ENRICH] /health: SDS kembalikan ${aiEndpoints.length} endpoint`);
+    console.log(`[ENRICH] /health: SDS returned ${aiEndpoints.length} endpoints`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
     }
   }
 
-  // Prioritas 4: Scraper HTML (kata kunci diperluas)
-  console.log('[ENRICH] Mencoba scraping halaman dokumentasi...');
-  const scrapedHTML = await scrapeHTMLPagesForEnrich(base, timeout);
+  // Priority 4: HTML scraper
+  console.log('[ENRICH] Running HTML scraper...');
+  const scrapedHTML = await scrapeHTMLPages(base, timeout);
   if (scrapedHTML.length > 0) {
     let combinedHTML = '';
     for (const page of scrapedHTML) {
       combinedHTML += `\n--- From ${page.url} ---\n${page.html.substring(0, 15000)}`;
     }
     const aiEndpoints = await callSDS(combinedHTML, 60000);
-    console.log(`[ENRICH] Scraper: SDS kembalikan ${aiEndpoints.length} endpoint`);
+    console.log(`[ENRICH] Scraper: SDS returned ${aiEndpoints.length} endpoints`);
     if (aiEndpoints.length > 0) {
       applyEnrichment(candidates, aiEndpoints);
     }
@@ -354,8 +353,8 @@ async function enrichCandidatesWithAI(candidates, base, timeout) {
   return candidates;
 }
 
-// ========== SCRAPER HTML (kata kunci diperluas) ==========
-async function scrapeHTMLPagesForEnrich(base, timeout) {
+// ========== SCRAPER ==========
+async function scrapeHTMLPages(base, timeout) {
   const startUrls = [
     `https://${base}`,
     `https://${base}/docs`,
@@ -370,14 +369,13 @@ async function scrapeHTMLPagesForEnrich(base, timeout) {
     requestHandlerTimeoutSecs: 30,
     async requestHandler({ request, $, enqueueLinks }) {
       const bodyText = $('body').text().toLowerCase();
-      // Kata kunci diperluas untuk menangkap dokumentasi API modern
       const keywords = [
         'x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method',
         'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'
       ];
       if (keywords.some(kw => bodyText.includes(kw))) {
         discoveredHTML.add({ url: request.url, html: $.html() });
-        console.log(`[SCRAPER-ENRICH] Found: ${request.url}`);
+        console.log(`[SCRAPER] Found: ${request.url}`);
         await enqueueLinks({
           transformRequestFunction(req) {
             const linkText = ($(`a[href="${req.url}"]`).text() || '').toLowerCase();
@@ -392,9 +390,8 @@ async function scrapeHTMLPagesForEnrich(base, timeout) {
   return [...discoveredHTML];
 }
 
-// Fungsi discoverWithAI (fallback jika deterministic tidak dapat apa-apa)
 async function discoverWithAI(domain, base, timeout) {
-  // Prioritas 1: /llms.txt
+  // Priority 1: /llms.txt
   try {
     const llmsRes = await got(`https://${base}/llms.txt`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (llmsRes.statusCode === 200 && llmsRes.body) {
@@ -409,7 +406,7 @@ async function discoverWithAI(domain, base, timeout) {
     }
   } catch (err) {}
 
-  // Prioritas 2: well-known/x402
+  // Priority 2: /.well-known/x402
   try {
     const wkRes = await got(`https://${base}/.well-known/x402`, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 } });
     if (wkRes.statusCode === 200 && wkRes.body) {
@@ -424,7 +421,7 @@ async function discoverWithAI(domain, base, timeout) {
     }
   } catch (err) {}
 
-  // Prioritas 3: agent-card
+  // Priority 3: agent-card
   const agentPaths = ['/.well-known/agent-card.json', '/.well-known/agent.json', '/.well-known/agent-services.json'];
   for (const ap of agentPaths) {
     try {
@@ -445,9 +442,8 @@ async function discoverWithAI(domain, base, timeout) {
   return null;
 }
 
-// Fungsi discoverWithScraper (untuk domain HTML sebagai fallback terakhir)
 async function discoverWithScraper(domain, base, timeout) {
-  const htmlPages = await scrapeHTMLPagesForEnrich(base, timeout);
+  const htmlPages = await scrapeHTMLPages(base, timeout);
   if (htmlPages.length === 0) return null;
 
   let combinedHTML = '';
@@ -481,6 +477,7 @@ async function checkEndpoint(base, candidate, timeout) {
   try {
     const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': '*/*' } });
     const httpStatus = response.statusCode; const responseTime = Date.now() - start;
+    const bodyHash = sha256(response.body);
 
     if (httpStatus === 402) {
       try {
@@ -489,16 +486,16 @@ async function checkEndpoint(base, candidate, timeout) {
           const offer = responseBody.accepts[0];
           const rawAmount = String(offer.maxAmountRequired || offer.amount || candidate.rawPrice || '');
           const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1000000).toFixed(6)}` : '';
-          return { domain: base, path, status: 'success', x402Version: String(responseBody.x402Version || ''), price: rawAmount, priceReadable, network: offer.network || candidate.network || '', asset: offer.asset || candidate.asset || '', payTo: offer.payTo || '', label: offer.label || candidate.label || '', description: offer.description || candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString() };
+          return { domain: base, path, status: 'success', x402Version: String(responseBody.x402Version || ''), price: rawAmount, priceReadable, network: offer.network || candidate.network || '', asset: offer.asset || candidate.asset || '', payTo: offer.payTo || candidate.payTo || '', label: offer.label || candidate.label || '', description: offer.description || candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
         }
       } catch (err) {}
     }
 
     const rawPrice = candidate.rawPrice || '';
     const priceReadable = rawPrice ? `$${(parseInt(rawPrice, 10) / 1000000).toFixed(6)}` : '';
-    return { domain: base, path, status: 'public_info', x402Version: '', price: rawPrice, priceReadable, network: candidate.network || '', asset: candidate.asset || '', payTo: '', label: candidate.label || '', description: candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString() };
+    return { domain: base, path, status: 'public_info', x402Version: '', price: rawPrice, priceReadable, network: candidate.network || '', asset: candidate.asset || '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
   } catch (err) {
-    return { domain: base, path, status: 'error', x402Version: '', price: '', priceReadable: '', network: '', asset: '', payTo: '', label: candidate.label || '', description: candidate.description || '', httpStatus: '0', responseTimeMs: String(Date.now() - start), errorMessage: err.message, timestamp: new Date().toISOString() };
+    return { domain: base, path, status: 'error', x402Version: '', price: '', priceReadable: '', network: '', asset: '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: '0', responseTimeMs: String(Date.now() - start), errorMessage: err.message, timestamp: new Date().toISOString(), auditHash: '' };
   }
 }
 
@@ -522,31 +519,26 @@ for (const base of targetDomains) {
   } else {
     console.log(`[DISCOVERY] Starting for ${base}`);
 
-    // 1. Deterministic
     let candidates = await discoverFromWellKnownAgent(base, timeout);
     if (!candidates) candidates = await discoverFromWellKnownX402(base, timeout);
     if (!candidates) candidates = await discoverFromOpenAPI(base, timeout);
     if (!candidates) candidates = await discoverFromHealth(base, timeout);
 
     if (candidates && candidates.length > 0) {
-      // 1b. Enrich dengan SDS (llms.txt → well-known → health → scraper)
       candidates = await enrichCandidatesWithAI(candidates, base, timeout);
       scanList = candidates;
       console.log(`[DISCOVERY] Deterministic + Enrich: ${candidates.length} endpoints`);
     } else {
-      // 2. AI discovery langsung (llms.txt → well-known → agent-card)
       candidates = await discoverWithAI(domain, base, timeout);
       if (candidates && candidates.length > 0) {
         scanList = candidates;
         console.log(`[DISCOVERY] AI found ${candidates.length} endpoints`);
       } else {
-        // 3. Scraper + SDS
         candidates = await discoverWithScraper(domain, base, timeout);
         if (candidates && candidates.length > 0) {
           scanList = candidates;
           console.log(`[DISCOVERY] Scraper found ${candidates.length} endpoints`);
         } else {
-          // 4. Dictionary fallback
           console.log('[DISCOVERY] Falling back to dictionary');
           scanList = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => ({ path: p, method: 'GET', body: null }));
         }
