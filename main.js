@@ -113,80 +113,253 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// Enrichment: Extract prices from well-known/x402
+// PRECISION PARSERS FOR STANDARD SOURCES
 // ============================================================
-function enrichFromWellKnown(candidates, wellKnownText) {
-  if (!wellKnownText) return candidates;
-  const priceMap = new Map();
+
+// -- Well-known /x402 --
+function parseWellKnownX402(text, base) {
+  const candidates = [];
   try {
-    const json = JSON.parse(wellKnownText);
-    const walk = (obj) => {
-      if (!obj || typeof obj !== 'object') return;
-      if (Array.isArray(obj)) { obj.forEach(walk); return; }
-      for (const [key, value] of Object.entries(obj)) {
-        if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
-          const path = normalizePath(key);
-          const meta = value && typeof value === 'object' ? value : {};
-          const price = meta.price || meta.amount || meta.cost || '';
-          if (price) priceMap.set(path, String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)));
+    const data = JSON.parse(text);
+    const extractPrice = (pricing) => {
+      if (!pricing) return '';
+      if (typeof pricing.price === 'number') return String(Math.round(pricing.price * 1_000_000));
+      if (typeof pricing.price === 'string') { const m = pricing.price.match(/\$?([\d.]+)/); if (m) return String(Math.round(parseFloat(m[1]) * 1_000_000)); }
+      if (typeof pricing.pricePerSource === 'number') return String(Math.round(pricing.pricePerSource * 1_000_000));
+      if (typeof pricing.inputPerMillionTokens === 'number') return String(Math.round(pricing.inputPerMillionTokens * 1_000_000));
+      if (typeof pricing.pricePerCall === 'number') return String(Math.round(pricing.pricePerCall * 1_000_000));
+      if (typeof pricing.perRequest === 'number') return String(Math.round(pricing.perRequest * 1_000_000));
+      if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1_000_000));
+      return '';
+    };
+
+    if (Array.isArray(data.resources)) {
+      for (const res of data.resources) {
+        if (typeof res === 'object' && res) {
+          const path = res.path || res.endpoint || res.url;
+          if (!path) continue;
+          candidates.push(normalizeCandidate({
+            path, method: res.method || 'GET',
+            rawPrice: extractPrice(res.pricing || res),
+            network: res.network || data.network || '',
+            asset: res.asset || data.asset || '',
+            label: res.name || res.id || '',
+            description: res.description || '',
+            source: '/.well-known/x402',
+          }));
+        } else if (typeof res === 'string') {
+          const parts = res.trim().split(/\s+/);
+          const method = parts.length > 1 ? parts[0] : 'GET';
+          const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
+          candidates.push(normalizeCandidate({
+            path, method, rawPrice: '',
+            network: data.network || '', asset: data.asset || '',
+            label: path, description: '', source: '/.well-known/x402',
+          }));
         }
       }
-      Object.values(obj).forEach(walk);
-    };
-    walk(json);
+    }
+
+    if (Array.isArray(data.resourceDetails)) {
+      for (const detail of data.resourceDetails) {
+        const path = detail.path || detail.endpoint;
+        if (!path) continue;
+        candidates.push(normalizeCandidate({
+          path, method: detail.method || 'GET',
+          rawPrice: extractPrice(detail.pricing || detail),
+          network: detail.network || data.network || '',
+          asset: detail.asset || data.asset || '',
+          label: detail.name || detail.label || detail.path || '',
+          description: detail.description || '',
+          source: '/.well-known/x402',
+        }));
+      }
+    }
+
+    if (Array.isArray(data.services)) {
+      for (const svc of data.services) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+        let rawPrice = extractPrice(svc.pricing || svc.price || {});
+        if (!rawPrice && Array.isArray(svc.models) && svc.models.length > 0) {
+          rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
+        }
+        const payment = svc.payment || {};
+        candidates.push(normalizeCandidate({
+          path, method: svc.method || 'POST',
+          rawPrice,
+          network: payment.network || svc.network || data.network || '',
+          asset: payment.asset || svc.asset || data.asset || '',
+          label: svc.name || svc.id || svc.label || '',
+          description: svc.description || '',
+          source: '/.well-known/x402',
+        }));
+      }
+    }
+
+    // Non-standard: keys as URLs
+    for (const [key, value] of Object.entries(data)) {
+      if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
+        const path = normalizePath(key);
+        const meta = value && typeof value === 'object' ? value : {};
+        const price = meta.price || meta.amount || meta.cost || '';
+        const method = meta.method || 'GET';
+        candidates.push({
+          path, method,
+          rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '',
+          network: meta.network || '', asset: meta.asset || '', payTo: meta.payTo || '',
+          label: meta.label || meta.name || meta.id || meta.summary || '',
+          description: meta.description || meta.summary || '',
+          source: '/.well-known/x402',
+        });
+      }
+    }
   } catch { /* not JSON */ }
+  return candidates;
+}
+
+// -- Agent card --
+function parseAgentCard(text) {
+  const candidates = [];
   try {
-    const json = JSON.parse(wellKnownText);
-    const resources = json.resources || json.resourceDetails || [];
-    for (const res of resources) {
-      const path = normalizePath(res.path || res.endpoint || res.url || '');
-      const pricing = res.pricing || res;
-      const price = pricing.price || pricing.amount || pricing.cost || '';
-      if (path && price) priceMap.set(path, String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)));
+    const data = JSON.parse(text);
+    const services = data.skills || data.services || data.endpoints || [];
+    for (const svc of services) {
+      const path = svc.endpoint || svc.path || svc.url;
+      if (!path) continue;
+      candidates.push(normalizeCandidate({
+        path, method: svc.method || 'GET',
+        rawPrice: String(svc.price || svc.cost || ''),
+        network: svc.network || '',
+        asset: svc.asset || '',
+        label: svc.name || svc.id || '',
+        description: svc.description || '',
+        source: 'agent-card',
+      }));
     }
-  } catch { /* not valid */ }
-  for (const c of candidates) {
-    if (!c.rawPrice) {
-      const foundPrice = priceMap.get(c.path);
-      if (foundPrice) { c.rawPrice = foundPrice; c.source = `${c.source}+wk-enrich`; }
+  } catch { /* not JSON */ }
+  return candidates;
+}
+
+// -- OpenAPI --
+function parseOpenAPI(text) {
+  const candidates = [];
+  try {
+    const spec = JSON.parse(text);
+    if (!spec.paths) return candidates;
+    for (const [path, methods] of Object.entries(spec.paths)) {
+      const methodKey = Object.keys(methods || {})[0] || 'get';
+      const operation = methods?.[methodKey] || {};
+      let price = '', network = '', asset = '', description = '';
+
+      if (operation['x-payment-info']) {
+        const pi = operation['x-payment-info'];
+        price = String(pi.price || pi.amount || '');
+        network = pi.network || ''; asset = pi.asset || pi.token || '';
+        description = pi.description || '';
+      }
+
+      const resp402 = operation.responses?.['402'];
+      if (resp402?.content?.['application/json']?.example?.accepts) {
+        const offer = resp402.content['application/json'].example.accepts[0] || {};
+        price = price || String(offer.maxAmountRequired || offer.amount || '');
+        network = network || offer.network || '';
+        asset = asset || offer.asset || '';
+        description = description || offer.description || operation.description || '';
+      }
+
+      if (!price && spec['x-payment-info']) {
+        const pi = spec['x-payment-info'];
+        price = String(pi.price || '');
+        network = network || pi.network || '';
+        asset = asset || pi.asset || '';
+      }
+
+      candidates.push(normalizeCandidate({
+        path, method: methodKey.toUpperCase(),
+        rawPrice: price, network, asset,
+        label: operation.summary || operation.operationId || '',
+        description: description || operation.description || '',
+        source: 'openapi',
+      }));
     }
-  }
+  } catch { /* not JSON */ }
+  return candidates;
+}
+
+// -- Health --
+function parseHealth(text) {
+  const candidates = [];
+  try {
+    const data = JSON.parse(text);
+    if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
+      for (const [path, info] of Object.entries(data.endpoints)) {
+        let rawPrice = ''; const network = data.network || '';
+        if (typeof info.price === 'string') {
+          const match = info.price.match(/\$([\d.]+)/);
+          if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1_000_000));
+          else if (info.price === 'free' || info.price === '0') rawPrice = '0';
+        } else if (typeof info.price === 'number') rawPrice = String(info.price);
+        candidates.push(normalizeCandidate({
+          path, method: 'GET', rawPrice, network, asset: '',
+          label: info.description || path, description: info.description || '', source: '/health',
+        }));
+      }
+    }
+    if (Array.isArray(data.endpoints)) {
+      for (const svc of data.endpoints) {
+        const path = svc.endpoint || svc.path || svc.url;
+        if (!path) continue;
+        candidates.push(normalizeCandidate({
+          path, method: svc.method || 'GET',
+          rawPrice: String(svc.price || svc.x402Price || ''),
+          network: svc.network || data.network || '',
+          asset: svc.asset || '',
+          label: svc.name || svc.id || svc.description || '',
+          description: svc.description || '',
+          source: '/health',
+        }));
+      }
+    }
+  } catch { /* not JSON */ }
   return candidates;
 }
 
 // ============================================================
-// INTELLIGENT UNIVERSAL EXTRACTION ENGINE
+// UNIVERSAL EXTRACTION (for scraped HTML and unknown formats)
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
 
-  // ============================================================
+  // -------- Pre‑extract pricing table fallback --------
+  const tablePrices = new Map();
+  const tableRegex = /\|\s*([A-Za-z][\w\s/-]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
+  let tm;
+  while ((tm = tableRegex.exec(raw)) !== null) {
+    tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
+  }
+
   // Strategy 1: Flexible <li> extraction (clean → aggressive fallback)
-  // ============================================================
   const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
   let liMatch;
   while ((liMatch = liPattern.exec(raw)) !== null) {
     const liContent = liMatch[1];
     let path = '';
-    // Clean extraction first
     const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) ||
                       liContent.match(/<span[^>]*>(\/[^<]+)<\/span>/i);
     const hrefMatch = liContent.match(/href="(\/[^"]+)"/i);
     if (codeMatch) path = codeMatch[1].trim();
     else if (hrefMatch) path = hrefMatch[1].trim();
-    // Aggressive fallback
     if (!path || !path.startsWith('/')) {
       const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/);
       if (pathMatch) path = pathMatch[1].trim();
     }
     if (!path || !path.startsWith('/')) continue;
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
-    // Price
     const priceMatch = liContent.match(/\$\s*([\d.]+)/);
     if (!priceMatch) continue;
     const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
-    // Description
     let description = '';
     const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) || liContent.match(/- ([^<]{10,100})/);
     if (descMatch) description = descMatch[1].trim();
@@ -202,14 +375,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     });
   }
 
-  // ============================================================
   // Strategy 2: Markdown blocks
-  // ============================================================
-  const tablePrices = new Map();
-  const tableRegex = /\|\s*([A-Za-z][\w\s/-]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
-  let tm;
-  while ((tm = tableRegex.exec(raw)) !== null) tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
-
   const mdBlocks = raw.split(/(?=^#{1,3}\s)/m);
   let previousHeading = '';
   for (const block of mdBlocks) {
@@ -241,37 +407,18 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (heading) previousHeading = heading;
   }
 
-  // ============================================================
-  // Strategy 3: JSON objects (including non-standard keys)
-  // ============================================================
-  try {
-    const json = JSON.parse(raw);
-    const walk = (obj) => {
-      if (!obj || typeof obj !== 'object') return;
-      if (Array.isArray(obj)) { obj.forEach(walk); return; }
-      for (const [key, value] of Object.entries(obj)) {
-        if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
-          const path = normalizePath(key);
-          const meta = value && typeof value === 'object' ? value : {};
-          const price = meta.price || meta.amount || meta.cost || '';
-          const method = meta.method || 'GET';
-          candidates.push({ path, method, rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '', network: meta.network || '', asset: meta.asset || '', payTo: meta.payTo || '', label: meta.label || meta.name || meta.id || meta.summary || '', description: meta.description || meta.summary || '', source: `universal:json-key:${sourceLabel}` });
-        }
-      }
-      const path = obj.path || obj.endpoint || obj.url;
-      if (path && typeof path === 'string' && path.startsWith('/')) {
-        const method = obj.method || 'GET';
-        const price = obj.price || obj.amount || obj.cost || '';
-        candidates.push({ path, method, rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '', network: obj.network || '', asset: obj.asset || '', payTo: obj.payTo || '', label: obj.label || obj.name || obj.id || obj.summary || '', description: obj.description || obj.summary || '', source: `universal:json:${sourceLabel}` });
-      }
-      Object.values(obj).forEach(walk);
-    };
-    walk(json);
-  } catch { /* not JSON */ }
+  // Strategy 3: Alternative llms.txt ( - name ($price): desc )
+  const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
+  let llmsAltMatch;
+  while ((llmsAltMatch = llmsAltPattern.exec(raw)) !== null) {
+    const name = llmsAltMatch[1].trim();
+    const price = String(Math.round(parseFloat(llmsAltMatch[2]) * 1_000_000));
+    const description = llmsAltMatch[3].trim();
+    const path = normalizePath('/tools/' + name.toLowerCase().replace(/\s+/g, '_'));
+    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: name, description, source: `universal:llms-alt:${sourceLabel}` });
+  }
 
-  // ============================================================
   // Strategy 4: HTML href extraction
-  // ============================================================
   const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
   for (const match of htmlPathMatches) {
     const path = match[1];
@@ -284,26 +431,12 @@ function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path, method: 'GET', rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '', network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
   }
 
-  // ============================================================
-  // Strategy 5: Alternative llms.txt ( - name ($price): desc )
-  // ============================================================
-  const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
-  let llmsAltMatch;
-  while ((llmsAltMatch = llmsAltPattern.exec(raw)) !== null) {
-    const name = llmsAltMatch[1].trim();
-    const price = String(Math.round(parseFloat(llmsAltMatch[2]) * 1_000_000));
-    const description = llmsAltMatch[3].trim();
-    const path = normalizePath('/tools/' + name.toLowerCase().replace(/\s+/g, '_'));
-    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: name, description, source: `universal:llms-alt:${sourceLabel}` });
-  }
-
-  // ============================================================
-  // Strategy 6: Plain text
-  // ============================================================
-  const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]+)/gi);
+  // Strategy 5: Plain text (safe regex that stops at non-path characters)
+  const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n"\]\},]+)/gi);
   for (const match of plainMatches) {
     const method = match[1].toUpperCase();
-    const path   = match[2];
+    const path   = match[2].replace(/[^a-zA-Z0-9_\/.-]/g, '');
+    if (!path.startsWith('/')) continue;
     const context = raw.substring(Math.max(0, match.index - 50), match.index + 200);
     const priceMatch = context.match(/\$([\d.]+)/);
     const descMatch  = context.match(/-\s*(.{10,100})$/m);
@@ -314,59 +447,100 @@ function universalExtract(text, sourceLabel = 'unknown') {
 }
 
 // ============================================================
-// Discovery Sources
+// Discovery Pipeline (routes sources to the right parser)
 // ============================================================
 async function fetchTextSource(url, timeout, label) {
   try {
-    const response = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
-    if (response.statusCode === 200 && response.body) { console.log(`[FETCH] ${label}: ${response.body.length} bytes`); return response.body; }
+    const response = await got(url, {
+      method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
+    });
+    if (response.statusCode === 200 && response.body) {
+      console.log(`[FETCH] ${label}: ${response.body.length} bytes`);
+      return response.body;
+    }
   } catch (err) { console.log(`[FETCH] ${label} error: ${err.message}`); }
   return null;
 }
 
 async function discoverFromAllSources(base, timeout) {
   const allCandidates = [];
-  let wellKnownText = '';
-  const sources = [
-    { url: `https://${base}/llms.txt`, label: 'llms.txt' },
-    { url: `https://${base}/.well-known/x402`, label: 'well-known-x402' },
-    { url: `https://${base}/.well-known/agent-card.json`, label: 'agent-card' },
-    { url: `https://${base}/.well-known/agent.json`, label: 'agent.json' },
-    { url: `https://${base}/.well-known/agent-services.json`, label: 'agent-services' },
-    { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
-    { url: `https://${base}/openapi.json`, label: 'openapi' },
-    { url: `https://${base}/swagger.json`, label: 'swagger' },
-    { url: `https://${base}/api-docs.json`, label: 'api-docs' },
-    { url: `https://${base}/health`, label: 'health' },
+
+  // Standard JSON sources → precision parsers
+  const standardSources = [
+    { label: 'well-known-x402',         parser: parseWellKnownX402 },
+    { label: 'agent-card',              parser: parseAgentCard },
+    { label: 'agent.json',              parser: parseAgentCard },
+    { label: 'agent-services',          parser: parseAgentCard },
+    { label: 'openapi',                 parser: parseOpenAPI },
+    { label: 'swagger',                 parser: parseOpenAPI },
+    { label: 'health',                  parser: parseHealth },
   ];
-  for (const src of sources) {
+
+  const standardUrls = [
+    { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402' },
+    { url: `https://${base}/.well-known/agent-card.json`,           label: 'agent-card' },
+    { url: `https://${base}/.well-known/agent.json`,                label: 'agent.json' },
+    { url: `https://${base}/.well-known/agent-services.json`,       label: 'agent-services' },
+    { url: `https://${base}/openapi.json`,                          label: 'openapi' },
+    { url: `https://${base}/swagger.json`,                          label: 'swagger' },
+    { url: `https://${base}/health`,                                label: 'health' },
+  ];
+
+  for (const src of standardUrls) {
     const text = await fetchTextSource(src.url, timeout, src.label);
     if (!text) continue;
-    if (src.label === 'well-known-x402') wellKnownText = text;
+    const parserDef = standardSources.find(s => s.label === src.label);
+    let extracted = [];
+    if (parserDef) {
+      extracted = parserDef.parser(text, base);
+      console.log(`[PARSE] ${src.label}: ${extracted.length} candidates (precision parser)`);
+    } else {
+      extracted = universalExtract(text, src.label);
+      console.log(`[EXTRACT] ${src.label}: ${extracted.length} candidates (universal)`);
+    }
+    allCandidates.push(...extracted);
+  }
+
+  // llms.txt and mcp.json → universal extractor
+  const textSources = [
+    { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
+    { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
+    { url: `https://${base}/api-docs.json`, label: 'api-docs' },
+  ];
+  for (const src of textSources) {
+    const text = await fetchTextSource(src.url, timeout, src.label);
+    if (!text) continue;
     const extracted = universalExtract(text, src.label);
     console.log(`[EXTRACT] ${src.label}: ${extracted.length} candidates`);
     allCandidates.push(...extracted);
   }
+
+  // HTML scraper → universal extractor
   const staticPages = await scrapeStaticPages(base, timeout);
   for (const page of staticPages) {
     const extracted = universalExtract(page.html, `scraper:${page.url}`);
     console.log(`[EXTRACT] scraper:${page.url}: ${extracted.length} candidates`);
     allCandidates.push(...extracted);
   }
-  let uniq = uniqCandidates(allCandidates);
-  uniq = enrichFromWellKnown(uniq, wellKnownText);
-  return uniq;
+
+  return uniqCandidates(allCandidates);
 }
 
 // ============================================================
 // Static Scraper
 // ============================================================
 async function scrapeStaticPages(base, timeout) {
-  const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
+  const startUrls = [
+    `https://${base}`, `https://${base}/docs`, `https://${base}/api`,
+    `https://${base}/developers`, `https://${base}/pricing`,
+  ];
   const discovered = new Map();
   const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
+
   const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 20, requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
+    maxRequestsPerCrawl: 20,
+    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
     async requestHandler({ request, response, $, enqueueLinks }) {
       const contentType = response?.headers?.['content-type'] || '';
       if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
@@ -383,7 +557,21 @@ async function scrapeStaticPages(base, timeout) {
         const bodyText = $('body').text().toLowerCase();
         const matched = keywords.filter((kw) => bodyText.includes(kw));
         if (matched.length > 0) { discovered.set(request.url, { url: request.url, html: $.html() }); console.log(`[SCRAPER] Found: ${request.url}`); }
-        await enqueueLinks({ transformRequestFunction(req) { try { const links = $('a[href]').toArray(); for (const el of links) { const href = $(el).attr('href') || ''; try { const fullHref = new URL(href, request.url).href; if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req; } catch { /* invalid href */ } } } catch { /* ignore */ } return null; } });
+        await enqueueLinks({
+          transformRequestFunction(req) {
+            try {
+              const links = $('a[href]').toArray();
+              for (const el of links) {
+                const href = $(el).attr('href') || '';
+                try {
+                  const fullHref = new URL(href, request.url).href;
+                  if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req;
+                } catch { /* invalid href */ }
+              }
+            } catch { /* ignore */ }
+            return null;
+          },
+        });
       } catch (err) {
         console.log(`[SCRAPER] Cheerio parsing failed for ${request.url}: ${err.message}`);
         try {
@@ -405,9 +593,11 @@ async function checkEndpoint(base, candidate, timeout) {
   const method = String(candidate.method || 'GET').toUpperCase();
   const url    = `https://${base}${path}`;
   const start  = Date.now();
+
   try {
     const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
     const httpStatus = response.statusCode; const responseTime = Date.now() - start; const bodyHash = sha256(response.body);
+
     if (httpStatus === 402) {
       try {
         const responseBody = JSON.parse(response.body);
@@ -419,6 +609,7 @@ async function checkEndpoint(base, candidate, timeout) {
         }
       } catch { /* fall through */ }
     }
+
     const rawPrice = candidate.rawPrice || '';
     const priceReadable = rawPrice ? `$${(parseInt(rawPrice, 10) / 1_000_000).toFixed(6)}` : '';
     return { domain: base, path, status: 'public_info', x402Version: '', price: rawPrice, priceReadable, network: candidate.network || '', asset: candidate.asset || '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
@@ -431,7 +622,11 @@ async function checkEndpoint(base, candidate, timeout) {
 // Report Generation
 // ============================================================
 async function generateDOCX(domain, results) {
-  const children = [ new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }), new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }), new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }) ];
+  const children = [
+    new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
+    new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
+    new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
+  ];
   if (results.length === 0) children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   else for (const row of results) {
     children.push(new Paragraph({ text: `${row.path} [${row.status}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
@@ -450,7 +645,7 @@ async function generateDOCX(domain, results) {
 
 async function generatePDF(domain, results) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 50 }); const chunks = []; doc.on('data', (chunk) => chunks.push(chunk)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
+    const doc = new PDFDocument({ margin: 50 }); const chunks = []; doc.on('data', chunk => chunks.push(chunk)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject);
     doc.fontSize(18).text('X402 Domain Scan Report', { align: 'center' }); doc.moveDown(0.5); doc.fontSize(11).text(`Domain: ${domain}`); doc.fontSize(11).text(`Scan time: ${new Date().toISOString()}`); doc.moveDown();
     if (results.length === 0) doc.fontSize(12).text('No public X402 information found on this domain.');
     else for (const row of results) {
@@ -474,31 +669,48 @@ async function generatePDF(domain, results) {
 const input = (await Actor.getInput()) || {};
 let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAULT_TIMEOUT, includeSubdomains = false } = input;
 if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
+
 domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
+
 const targetDomains = [domain];
 if (includeSubdomains) {
-  if (!domain.toLowerCase().endsWith('.workers.dev') && !domain.toLowerCase().endsWith('.fly.dev')) targetDomains.push(`api.${domain}`);
+  const lowerDomain = domain.toLowerCase();
+  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) targetDomains.push(`api.${domain}`);
   else console.log('[SDS] Workers/Fly domain detected. Skipping "api." subdomain addition.');
 }
+
 const allResults = [];
 const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
+
 for (const base of targetDomains) {
   console.log(`[SDS] Starting discovery for ${base}`);
+
   let candidates = await discoverFromAllSources(base, timeout);
-  if (candidates.length === 0 && manualList.length > 0) candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
-  if (candidates.length === 0) candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
-  candidates = candidates.filter(isValidCandidate); candidates = uniqCandidates(candidates);
+
+  if (candidates.length === 0 && manualList.length > 0) {
+    candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
+  }
+  if (candidates.length === 0) {
+    candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+  }
+
+  candidates = candidates.filter(isValidCandidate);
+  candidates = uniqCandidates(candidates);
   console.log(`[SDS] ${base}: ${candidates.length} candidates to verify`);
+
   const queue = [...candidates]; const verified = [];
   async function worker() { while (queue.length > 0) { const item = queue.shift(); if (!item) continue; verified.push(await checkEndpoint(base, item, timeout)); } }
   await Promise.all(Array.from({ length: DEFAULT_CONCURRENCY }, () => worker()));
+
   for (const row of verified) if (row) allResults.push(row);
 }
+
 const finalResults = allResults.map(row => ({ ...row, download_docx: '', download_pdf: '' }));
 const docxBuffer = await generateDOCX(domain, finalResults); const pdfBuffer = await generatePDF(domain, finalResults);
 const docxUrl = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 const pdfUrl  = await saveFileToKVS('OUTPUT.pdf', pdfBuffer, 'application/pdf');
 const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
+
 await Actor.pushData(output);
 console.log(`Scan complete. ${output.length} endpoints found.`);
 await Actor.exit();
