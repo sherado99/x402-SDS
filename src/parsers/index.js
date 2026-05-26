@@ -44,14 +44,15 @@ export function parseAllRawData(rawPaths, scrapedData) {
   // 2. Parse body respons dari scraper
   for (const item of scrapedData) {
     if (!item.body) continue;
-    const { candidate, body, statusCode } = item;
+    // TAMBAHKAN bodyHash, responseTime, errorMessage di sini:
+    const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
 
-        if (statusCode === 402) {
+    if (statusCode === 402) {
       try {
         const json = JSON.parse(body);
         if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
-          const offer = json.accepts[0]; // <--- PERBAIKANNYA DI SINI (Tambahkan [0])
+          const offer = json.accepts[0];
           candidates.push(normalizeCandidate({
             path,
             method: candidate.method || 'GET',
@@ -62,7 +63,12 @@ export function parseAllRawData(rawPaths, scrapedData) {
             label: offer.label || candidate.label || '',
             description: offer.description || candidate.description || '',
             source: 'scraper:402',
-          }));
+            // MASUKKAN DATANYA KE SINI:
+            httpStatus: statusCode,
+            auditHash: bodyHash,
+            responseTimeMs: responseTime,
+            errorMessage: errorMessage
+          } ));
           continue;
         }
       } catch { /* not JSON */ }
@@ -70,16 +76,21 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
     const extracted = universalExtract(body, `scraper:${path}`);
     const cleaned = smartRouter(extracted, 'scraper');
-    if (cleaned.length > 0) candidates.push(...cleaned);
+    // MASUKKAN JUGA KE HASIL UNIVERSAL EXTRACT:
+    const cleanedWithMeta = cleaned.map(c => ({
+      ...c,
+      httpStatus: statusCode,
+      auditHash: bodyHash,
+      responseTimeMs: responseTime,
+      errorMessage: errorMessage
+    } ));
+    if (cleanedWithMeta.length > 0) candidates.push(...cleanedWithMeta);
   }
 
   return uniqCandidates(candidates).filter(isValidCandidate);
 }
 
 export function finalFilter(parsedCandidates, domain) {
-  // TAMPILKAN KE LOG AGAR KITA BISA MELIHATNYA
-  console.log('\n[DEBUG] Candidates before filter:', JSON.stringify(parsedCandidates, null, 2));
-
   return parsedCandidates.map(c => ({
     domain,
     path: c.path,
@@ -92,16 +103,15 @@ export function finalFilter(parsedCandidates, domain) {
     payTo: c.payTo || '',
     label: c.label || '',
     description: c.description || '',
-    httpStatus: '',
-    responseTimeMs: '',
-    errorMessage: '',
+    // UBAH 4 BARIS INI:
+    httpStatus: c.httpStatus || '',
+    responseTimeMs: c.responseTimeMs || '',
+    errorMessage: c.errorMessage || '',
+    auditHash: c.auditHash || '',
     timestamp: new Date( ).toISOString(),
-    auditHash: '',
   })).filter(row => {
-    // KITA LONGGARKAN FILTERNYA: Yang penting ada harganya (Price) atau ada Label-nya
     const hasPrice = row.price && row.price !== '0';
     const hasLabel = row.label && row.label.length > 2;
-    
-    return hasPrice || hasLabel; // Menggunakan ATAU (||) bukan DAN (&&)
+    return hasPrice || hasLabel;
   });
 }
