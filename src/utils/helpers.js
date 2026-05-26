@@ -29,6 +29,10 @@ export function normalizeCandidate(raw = {}) {
     label:       String(raw.label || raw.name || ''),
     description: String(raw.description || ''),
     source:      String(raw.source || 'unknown'),
+    httpStatus:     raw.httpStatus || '',
+    auditHash:      raw.auditHash || '',
+    responseTimeMs: raw.responseTimeMs || '',
+    errorMessage:   raw.errorMessage || ''
   };
 }
 
