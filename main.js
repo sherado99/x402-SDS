@@ -2,6 +2,7 @@ import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
 import crypto from 'crypto';
+import fs from 'fs/promises';
 import { Document, Packer, Paragraph, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
 
@@ -56,11 +57,7 @@ function normalizePath(rawPath) {
 
 function parsePathsInput(pathsInput) {
   if (!pathsInput) return [];
-  return String(pathsInput)
-    .split(/\r?\n/g)
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .map(normalizePath);
+  return String(pathsInput).split(/\r?\n/g).map((x) => x.trim()).filter(Boolean).map(normalizePath);
 }
 
 function uniqCandidates(candidates = []) {
@@ -132,7 +129,7 @@ async function loadDictionary() {
     const raw    = await fs.readFile('./dictionary_path.json', 'utf8');
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizePath);
-  } catch { /* ignore, use built-in */ }
+  } catch { /* ignore */ }
   return BUILT_IN_DICTIONARY.map(normalizePath);
 }
 
@@ -157,8 +154,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
 
-  // -------- Strategy 1: Markdown headings with price --------
-  // Matches: ## POST /api/xyz  ...  Price: $0.02 per request
+  // Strategy 1: Markdown headings with price
   const mdBlocks = raw.split(/(?=^#{1,3}\s)/m);
   for (const block of mdBlocks) {
     const pathMatch = block.match(/(?:GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]+)/i);
@@ -182,8 +178,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     });
   }
 
-  // -------- Strategy 2: JSON objects with path+price --------
-  // Matches: {"path": "/api/xyz", "price": 0.02, "description": "..."}
+  // Strategy 2: JSON objects
   try {
     const json = JSON.parse(raw);
     const walk = (obj) => {
@@ -205,10 +200,9 @@ function universalExtract(text, sourceLabel = 'unknown') {
       Object.values(obj).forEach(walk);
     };
     walk(json);
-  } catch { /* not JSON, continue */ }
+  } catch { /* not JSON */ }
 
-  // -------- Strategy 3: HTML extraction --------
-  // Matches: <a href="/api/xyz"> or <code>/api/xyz</code> with nearby price
+  // Strategy 3: HTML extraction
   const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
   for (const match of htmlPathMatches) {
     const path = match[1];
@@ -226,8 +220,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     });
   }
 
-  // -------- Strategy 4: Plain text path + price patterns --------
-  // Matches: POST /api/xyz - $0.02 - Description
+  // Strategy 4: Plain text path + price
   const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]+)/gi);
   for (const match of plainMatches) {
     const method = match[1].toUpperCase();
@@ -249,7 +242,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
 }
 
 // ============================================================
-// Discovery Sources (simplified: all use universalExtract)
+// Discovery Sources
 // ============================================================
 async function fetchTextSource(url, timeout, label) {
   try {
@@ -291,7 +284,6 @@ async function discoverFromAllSources(base, timeout) {
     allCandidates.push(...extracted);
   }
 
-  // Scraper for HTML pages
   const staticPages = await scrapeStaticPages(base, timeout);
   for (const page of staticPages) {
     const extracted = universalExtract(page.html, `scraper:${page.url}`);
@@ -419,8 +411,66 @@ async function checkEndpoint(base, candidate, timeout) {
 // ============================================================
 // Report Generation
 // ============================================================
-async function generateDOCX(domain, results) { /* unchanged from previous working version */ }
-async function generatePDF(domain, results) { /* unchanged */ }
+async function generateDOCX(domain, results) {
+  const children = [
+    new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
+    new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
+    new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
+  ];
+
+  if (results.length === 0) {
+    children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
+  } else {
+    for (const row of results) {
+      children.push(new Paragraph({ text: `${row.path} [${row.status}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
+      if (row.priceReadable) children.push(new Paragraph({ text: `Price: ${row.priceReadable} | Network: ${row.network}`, spacing: { after: 40 } }));
+      if (row.label)         children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
+      if (row.asset)         children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
+      if (row.payTo)         children.push(new Paragraph({ text: `Pay To: ${row.payTo}`, spacing: { after: 40 } }));
+      if (row.description)   children.push(new Paragraph({ text: `Description: ${row.description}`, spacing: { after: 40 } }));
+      if (row.auditHash)     children.push(new Paragraph({ text: `Audit Hash: ${row.auditHash}`, spacing: { after: 40 } }));
+      if (row.errorMessage)  children.push(new Paragraph({ text: `Error: ${row.errorMessage}`, spacing: { after: 40 } }));
+      children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
+    }
+  }
+
+  const doc = new Document({ sections: [{ properties: {}, children }] });
+  return Packer.toBuffer(doc);
+}
+
+async function generatePDF(domain, results) {
+  return new Promise((resolve, reject) => {
+    const doc    = new PDFDocument({ margin: 50 });
+    const chunks = [];
+    doc.on('data', (chunk) => chunks.push(chunk));
+    doc.on('end',  () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    doc.fontSize(18).text('X402 Domain Scan Report', { align: 'center' });
+    doc.moveDown(0.5);
+    doc.fontSize(11).text(`Domain: ${domain}`);
+    doc.fontSize(11).text(`Scan time: ${new Date().toISOString()}`);
+    doc.moveDown();
+
+    if (results.length === 0) {
+      doc.fontSize(12).text('No public X402 information found on this domain.');
+    } else {
+      for (const row of results) {
+        doc.fontSize(12).text(`${row.path} [${row.status}]`, { underline: true });
+        if (row.priceReadable) doc.fontSize(10).text(`Price: ${row.priceReadable} | Network: ${row.network}`);
+        if (row.label)         doc.fontSize(10).text(`Label: ${row.label}`);
+        if (row.asset)         doc.fontSize(10).text(`Asset: ${row.asset}`);
+        if (row.payTo)         doc.fontSize(10).text(`Pay To: ${row.payTo}`);
+        if (row.description)   doc.fontSize(10).text(`Description: ${row.description}`);
+        if (row.auditHash)     doc.fontSize(10).text(`Audit Hash: ${row.auditHash}`);
+        if (row.errorMessage)  doc.fontSize(10).text(`Error: ${row.errorMessage}`);
+        doc.fontSize(9).text(`HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`);
+        doc.moveDown(0.5);
+      }
+    }
+    doc.end();
+  });
+}
 
 // ============================================================
 // Main
