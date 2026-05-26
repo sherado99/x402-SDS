@@ -1,17 +1,18 @@
 {
-  "name": "x402-domain-scanner",
-  "version": "1.1.0",
+  "name": "x402-agent-scanner",
+  "version": "1.0.0",
   "type": "module",
+  "description": "Apify Actor untuk memindai endpoint X402 dan kapabilitas AI Agent",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js"
+  },
   "dependencies": {
-    "apify": "^3.1.0",
-    "crawlee": "^3.16.0",
-    "got": "^12.0.0",
+    "apify": "^3.2.0",
+    "crawlee": "^3.10.0",
+    "got": "^14.0.0",
     "docx": "^8.5.0",
     "pdfkit": "^0.15.0",
-    "hpagent": "^1.2.0"
-
-  },
-  "scripts": {
-    "start": "node main.js"
+    "https-proxy-agent": "^7.0.0"
   }
 }
