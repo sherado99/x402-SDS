@@ -14,8 +14,6 @@ await Actor.init();
 const DEFAULT_TIMEOUT    = 5000;
 const DEFAULT_MAX_PATHS  = 100;
 const DEFAULT_CONCURRENCY = 8;
-const MAX_BODY_PREVIEW   = 1000;
-const MAX_TEXT_PREVIEW   = 15000;
 
 const BUILT_IN_DICTIONARY = [
   '/x402/', '/x402/sapi', '/x402/spdet', '/x402/scdft',
@@ -30,14 +28,6 @@ const BUILT_IN_DICTIONARY = [
 // ============================================================
 // Helpers
 // ============================================================
-function normalizeDomain(d) {
-  return String(d || '')
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/.*$/, '')
-    .replace(/\/+$/, '')
-    .trim();
-}
-
 function sha256(raw) {
   return crypto.createHash('sha256').update(String(raw || '')).digest('hex');
 }
@@ -55,11 +45,6 @@ function normalizePath(rawPath) {
   return p.toLowerCase();
 }
 
-function parsePathsInput(pathsInput) {
-  if (!pathsInput) return [];
-  return String(pathsInput).split(/\r?\n/g).map((x) => x.trim()).filter(Boolean).map(normalizePath);
-}
-
 function uniqCandidates(candidates = []) {
   const seen = new Set();
   const out  = [];
@@ -71,7 +56,7 @@ function uniqCandidates(candidates = []) {
     out.push({
       path:        normalizePath(c.path),
       method:      String(c.method || 'GET').toUpperCase(),
-      rawPrice:    String(c.rawPrice || c.price || ''),
+      rawPrice:    String(c.rawPrice || ''),
       network:     String(c.network || ''),
       asset:       String(c.asset || ''),
       payTo:       String(c.payTo || ''),
@@ -83,54 +68,41 @@ function uniqCandidates(candidates = []) {
   return out;
 }
 
-function cheapExtractPrice(text) {
-  const match = String(text || '').match(/\$\s*([\d.]+)/i);
-  return match ? String(Math.round(parseFloat(match[1]) * 1_000_000)) : '';
-}
-
-function cheapExtractLabel(path) {
-  const parts = normalizePath(path).split('/').filter(Boolean);
-  if (parts.length === 0) return '';
-  return parts.slice(1).map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
-}
-
 function isValidCandidate(candidate) {
   if (!candidate?.path) return false;
   if (!candidate.path.startsWith('/')) return false;
   if (candidate.path.length > 300) return false;
+
+  // Filter noise: reject static assets and non-API paths
+  const noisePatterns = [
+    /\/_next\//i, /\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i,
+    /\/static\//i, /\/chunks\//i, /\/media\//i,
+    /\/favicon/i, /\/logo/i, /\/merit-logo/i,
+    /\/llms\.txt/i, /\/docs\/?$/i,
+    /\/v1\/x402\/?$/i, /\/v2\/x402\/?$/i, /\/\.well-known\/x402\/?$/i,
+  ];
+  if (noisePatterns.some(p => p.test(candidate.path))) return false;
+
+  // Reject paths that are just query strings or fragments
+  if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
+
   return true;
 }
 
 function classifyError(errorMessage = '') {
   const msg = String(errorMessage).toLowerCase();
-  if (msg.includes('timed out') || msg.includes('timeout'))              return 'timeout';
+  if (msg.includes('timed out') || msg.includes('timeout')) return 'timeout';
   if (msg.includes('403') || msg.includes('forbidden') || msg.includes('blocked')) return 'blocked';
-  if (msg.includes('401') || msg.includes('unauthorized'))               return 'unauthorized';
-  if (msg.includes('429') || msg.includes('rate limit'))                 return 'rate_limited';
-  if (msg.includes('404') || msg.includes('not found'))                  return 'not_found';
+  if (msg.includes('401') || msg.includes('unauthorized')) return 'unauthorized';
+  if (msg.includes('429') || msg.includes('rate limit')) return 'rate_limited';
+  if (msg.includes('404') || msg.includes('not found')) return 'not_found';
   return 'network_error';
-}
-
-async function logFailure(base, stage, details = {}) {
-  try {
-    const dataset = await Actor.openDataset('failed-scans');
-    await dataset.pushData({ domain: base, stage, timestamp: new Date().toISOString(), ...details });
-  } catch (err) { console.error(`[FAIL-LOG] ${err.message}`); }
 }
 
 async function saveFileToKVS(filename, buffer, contentType) {
   const store = await Actor.openKeyValueStore();
   await store.setValue(filename, buffer, { contentType });
   return `https://api.apify.com/v2/key-value-stores/${store.id}/records/${filename}?disableRedirect=true`;
-}
-
-async function loadDictionary() {
-  try {
-    const raw    = await fs.readFile('./dictionary_path.json', 'utf8');
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizePath);
-  } catch { /* ignore */ }
-  return BUILT_IN_DICTIONARY.map(normalizePath);
 }
 
 function normalizeCandidate(raw = {}) {
@@ -148,37 +120,79 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// UNIVERSAL EXTRACTION ENGINE
+// UNIVERSAL EXTRACTION ENGINE (REFINED)
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
 
-  // Strategy 1: Markdown headings with price
+  // -------- Pre‑extract pricing table fallback --------
+  const tablePrices = new Map();
+  const tableRegex = /\|\s*([A-Za-z][\w\s/-]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
+  let tm;
+  while ((tm = tableRegex.exec(raw)) !== null) {
+    tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
+  }
+
+  // -------- Strategy 1: Markdown blocks --------
   const mdBlocks = raw.split(/(?=^#{1,3}\s)/m);
+  let previousHeading = '';
   for (const block of mdBlocks) {
+    const headingMatch = block.match(/^#{1,3}\s+(.+)$/m);
+    const heading = headingMatch ? headingMatch[1].trim() : '';
+
     const pathMatch = block.match(/(?:GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]+)/i);
-    if (!pathMatch) continue;
+    if (!pathMatch) {
+      if (heading) previousHeading = heading;
+      continue;
+    }
     const method = pathMatch[0].split(/\s+/)[0].toUpperCase();
     const path   = pathMatch[1];
+
+    // Price: inline first, then table fallback
     const priceMatch = block.match(/Price:\s*\$?([\d.]+)/i);
-    const price     = priceMatch ? priceMatch[1] : '';
-    const labelMatch = block.match(/^#{1,3}\s+(.+)$/m);
-    const label     = labelMatch ? labelMatch[1].replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '').trim() : '';
-    const descMatch  = block.match(/^(?!.*Price:)([A-Za-z].{10,200})$/m);
-    const description = descMatch ? descMatch[1].trim() : label;
+    let price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
+    if (!price) {
+      // Try table fallback using the endpoint name from heading
+      const headingLower = heading.toLowerCase();
+      for (const [key, val] of tablePrices) {
+        if (headingLower.includes(key) || key.includes(headingLower)) {
+          price = val;
+          break;
+        }
+      }
+    }
+
+    // Label: heading > previous heading > cheap label
+    const cleanHeading = heading.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '').trim();
+    let label = cleanHeading || previousHeading || '';
+    // If label is still messy (contains newlines, markdown), fall back to previous heading
+    if (label.includes('\n') || label.includes('#')) label = previousHeading || '';
+    if (!label) label = path.split('/').filter(Boolean).slice(-2).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
+
+    // Description: first non-heading, non-price line that's long enough
+    const lines = block.split('\n');
+    let description = '';
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.includes('Price:')) continue;
+      if (trimmed.length > 15) { description = trimmed; break; }
+    }
+    if (!description) description = label;
 
     candidates.push({
       path, method,
-      rawPrice: price ? String(Math.round(parseFloat(price) * 1_000_000)) : '',
+      rawPrice: price,
       network: '', asset: '', payTo: '',
-      label: label || cheapExtractLabel(path),
-      description: description || label || '',
+      label,
+      description,
       source: `universal:md:${sourceLabel}`,
     });
+
+    if (heading) previousHeading = heading;
   }
 
-  // Strategy 2: JSON objects
+  // -------- Strategy 2: JSON objects --------
   try {
     const json = JSON.parse(raw);
     const walk = (obj) => {
@@ -192,7 +206,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
           path, method,
           rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '',
           network: obj.network || '', asset: obj.asset || '', payTo: obj.payTo || '',
-          label: obj.label || obj.name || obj.id || obj.summary || cheapExtractLabel(path),
+          label: obj.label || obj.name || obj.id || obj.summary || '',
           description: obj.description || obj.summary || '',
           source: `universal:json:${sourceLabel}`,
         });
@@ -202,11 +216,15 @@ function universalExtract(text, sourceLabel = 'unknown') {
     walk(json);
   } catch { /* not JSON */ }
 
-  // Strategy 3: HTML extraction
+  // -------- Strategy 3: HTML extraction (filtered) --------
   const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
   for (const match of htmlPathMatches) {
     const path = match[1];
     if (!path.startsWith('/')) continue;
+    // Quick noise filter for HTML strategy
+    if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
+    if (path.includes('/_next/') || path.includes('/static/')) continue;
+
     const context = raw.substring(Math.max(0, match.index - 200), match.index + 300);
     const priceMatch = context.match(/\$([\d.]+)/);
     const labelMatch = context.match(/>([^<]{5,50})<\/a>/);
@@ -214,13 +232,13 @@ function universalExtract(text, sourceLabel = 'unknown') {
       path, method: 'GET',
       rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '',
       network: '', asset: '', payTo: '',
-      label: labelMatch ? labelMatch[1].trim() : cheapExtractLabel(path),
+      label: labelMatch ? labelMatch[1].trim() : '',
       description: '',
       source: `universal:html:${sourceLabel}`,
     });
   }
 
-  // Strategy 4: Plain text path + price
+  // -------- Strategy 4: Plain text --------
   const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n]+)/gi);
   for (const match of plainMatches) {
     const method = match[1].toUpperCase();
@@ -232,7 +250,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
       path, method,
       rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '',
       network: '', asset: '', payTo: '',
-      label: descMatch ? descMatch[1].trim() : cheapExtractLabel(path),
+      label: descMatch ? descMatch[1].trim() : '',
       description: descMatch ? descMatch[1].trim() : '',
       source: `universal:text:${sourceLabel}`,
     });
@@ -417,7 +435,6 @@ async function generateDOCX(domain, results) {
     new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
     new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
   ];
-
   if (results.length === 0) {
     children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   } else {
@@ -433,7 +450,6 @@ async function generateDOCX(domain, results) {
       children.push(new Paragraph({ text: `HTTP Status: ${row.httpStatus} | Response Time: ${row.responseTimeMs}ms`, spacing: { after: 80 } }));
     }
   }
-
   const doc = new Document({ sections: [{ properties: {}, children }] });
   return Packer.toBuffer(doc);
 }
@@ -445,13 +461,11 @@ async function generatePDF(domain, results) {
     doc.on('data', (chunk) => chunks.push(chunk));
     doc.on('end',  () => resolve(Buffer.concat(chunks)));
     doc.on('error', reject);
-
     doc.fontSize(18).text('X402 Domain Scan Report', { align: 'center' });
     doc.moveDown(0.5);
     doc.fontSize(11).text(`Domain: ${domain}`);
     doc.fontSize(11).text(`Scan time: ${new Date().toISOString()}`);
     doc.moveDown();
-
     if (results.length === 0) {
       doc.fontSize(12).text('No public X402 information found on this domain.');
     } else {
@@ -479,13 +493,12 @@ const input = (await Actor.getInput()) || {};
 let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAULT_TIMEOUT, includeSubdomains = false } = input;
 if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
 
-domain = normalizeDomain(domain);
+domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
 const targetDomains = [domain];
 if (includeSubdomains) targetDomains.push(`api.${domain}`);
 
 const allResults = [];
-const dict = await loadDictionary();
-const manualList = parsePathsInput(manualPaths);
+const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
 
 for (const base of targetDomains) {
   console.log(`[SDS] Starting discovery for ${base}`);
@@ -493,11 +506,10 @@ for (const base of targetDomains) {
   let candidates = await discoverFromAllSources(base, timeout);
 
   if (candidates.length === 0 && manualList.length > 0) {
-    candidates = manualList.map((p) => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
+    candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
   }
   if (candidates.length === 0) {
-    await logFailure(base, 'all-methods', { reason: 'Falling back to dictionary' });
-    candidates = dict.slice(0, maxPaths).map((p) => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+    candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
   }
 
   candidates = candidates.filter(isValidCandidate);
@@ -518,12 +530,12 @@ for (const base of targetDomains) {
   for (const row of verified) { if (row) allResults.push(row); }
 }
 
-const finalResults = allResults.map((row) => ({ ...row, download_docx: '', download_pdf: '' }));
+const finalResults = allResults.map(row => ({ ...row, download_docx: '', download_pdf: '' }));
 const docxBuffer = await generateDOCX(domain, finalResults);
 const pdfBuffer  = await generatePDF(domain, finalResults);
 const docxUrl    = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 const pdfUrl     = await saveFileToKVS('OUTPUT.pdf',  pdfBuffer,  'application/pdf');
-const output = finalResults.map((row) => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
+const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
 
 await Actor.pushData(output);
 console.log(`Scan complete. ${output.length} endpoints found.`);
