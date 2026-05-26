@@ -78,17 +78,47 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
   }
 
-  // Plain text
-  const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n"\]\},]+)/gi);
+    // Plain text & Block UI extraction
+  const plainMatches = raw.matchAll(/(?:GET|POST|PUT|DELETE|PATCH)\s*\n?\s*(\/[a-zA-Z0-9_/-]+)/gi);
   for (const match of plainMatches) {
-    const method = match[1].toUpperCase(); // PERBAIKAN: Tambahkan [1]
-    const path   = match[2].replace(/[^a-zA-Z0-9_\/.-]/g, ''); // PERBAIKAN: Tambahkan [2]
+    const path = match[1];
     if (!path.startsWith('/')) continue;
-    const context = raw.substring(Math.max(0, match.index - 50), match.index + 200);
-    const priceMatch = context.match(/\$([\d.]+)/);
-    const price = extractPrice(priceMatch ? priceMatch[0] : ''); // PERBAIKAN: Tambahkan [0]
-    const descMatch  = context.match(/-\s*(.{10,100})$/m);
-    candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label: descMatch ? descMatch[1].trim() : '', description: descMatch ? descMatch[1].trim() : '', source: `universal:text:${sourceLabel}` });
+    
+    // Ambil teks setelah path ditemukan (sekitar 400 karakter ke depan)
+    const contextAfter = raw.substring(match.index + match[0].length, match.index + 400);
+    
+    const priceMatch = contextAfter.match(/\$([\d.]+)/);
+    const price = extractPrice(priceMatch ? priceMatch[1] : '');
+    
+    // Bersihkan HTML tags dan pisahkan berdasarkan baris baru
+    const lines = contextAfter.split('\n').map(l => l.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
+    
+    let description = '';
+    let label = '';
+    
+    // Cari baris yang panjangnya lebih dari 20 huruf sebagai deskripsi
+    for (const line of lines) {
+      if (line.includes('$') || line.length < 4) continue;
+      if (line.length > 25 && !description) {
+        description = line;
+      } else if (!label && line.length >= 4 && line.length <= 25) {
+        label = line;
+      }
+    }
+    
+    // Fallback jika regex lama menangkap format Markdown
+    const fallbackDescMatch = raw.substring(Math.max(0, match.index - 50), match.index + 200).match(/-\s*(.{15,100})$/m);
+    if (!description && fallbackDescMatch) description = fallbackDescMatch[1].trim();
+
+    candidates.push({ 
+      path, 
+      method: 'GET', 
+      rawPrice: price, 
+      network: '', asset: '', payTo: '', 
+      label: label || description || path, 
+      description: description || label || path, 
+      source: `universal:text:${sourceLabel}` 
+    });
   }
 
   return candidates;
