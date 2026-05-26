@@ -83,8 +83,11 @@ function isValidCandidate(candidate) {
   ];
   if (noisePatterns.some(p => p.test(candidate.path))) return false;
 
-  // Reject paths that are just query strings or fragments
+  // Reject paths with newlines or markdown artifacts
   if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
+
+  // ✅ New: 
+  if (!candidate.rawPrice || candidate.rawPrice === '0') return false;
 
   return true;
 }
