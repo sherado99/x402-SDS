@@ -1,1 +1,7 @@
+{
+  "name": "x402-agent-scanner",
+  "version": "0.0.1",
+  "buildTag": "latest",
+  "env": null
+}
 
