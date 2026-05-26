@@ -64,29 +64,31 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path: normalizePath('/tools/' + llmsAltMatch.trim().toLowerCase().replace(/\s+/g, '_')), method: 'GET', rawPrice: String(Math.round(parseFloat(llmsAltMatch) * 1_000_000)), network: '', asset: '', payTo: '', label: llmsAltMatch.trim(), description: llmsAltMatch.trim(), source: `universal:llms-alt:${sourceLabel}` });
   }
 
-  // HTML href extraction
+    // HTML href extraction
   const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
   for (const match of htmlPathMatches) {
-    const path = match;
+    const path = match[1]; // PERBAIKAN: Tambahkan [1]
     if (!path.startsWith('/')) continue;
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
     if (path.includes('/_next/') || path.includes('/static/')) continue;
     const context = raw.substring(Math.max(0, match.index - 200), match.index + 300);
-    const price = extractPrice(context.match(/\$([\d.]+)/) ? context.match(/\$([\d.]+)/) : '');
+    const priceMatch = context.match(/\$([\d.]+)/);
+    const price = extractPrice(priceMatch ? priceMatch[0] : ''); // PERBAIKAN: Tambahkan [0]
     const labelMatch = context.match(/>([^<]{5,50})<\/a>/);
-    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: labelMatch ? labelMatch.trim() : '', description: '', source: `universal:html:${sourceLabel}` });
+    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
   }
 
   // Plain text
   const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n"\]\},]+)/gi);
   for (const match of plainMatches) {
-    const method = match.toUpperCase();
-    const path   = match.replace(/[^a-zA-Z0-9_\/.-]/g, '');
+    const method = match[1].toUpperCase(); // PERBAIKAN: Tambahkan [1]
+    const path   = match[2].replace(/[^a-zA-Z0-9_\/.-]/g, ''); // PERBAIKAN: Tambahkan [2]
     if (!path.startsWith('/')) continue;
     const context = raw.substring(Math.max(0, match.index - 50), match.index + 200);
-    const price = extractPrice(context.match(/\$([\d.]+)/) ? context.match(/\$([\d.]+)/) : '');
+    const priceMatch = context.match(/\$([\d.]+)/);
+    const price = extractPrice(priceMatch ? priceMatch[0] : ''); // PERBAIKAN: Tambahkan [0]
     const descMatch  = context.match(/-\s*(.{10,100})$/m);
-    candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label: descMatch ? descMatch.trim() : '', description: descMatch ? descMatch.trim() : '', source: `universal:text:${sourceLabel}` });
+    candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label: descMatch ? descMatch[1].trim() : '', description: descMatch ? descMatch[1].trim() : '', source: `universal:text:${sourceLabel}` });
   }
 
   return candidates;
