@@ -18,16 +18,19 @@ export async function scrapeEndpoints(base, candidates, timeout, proxyConfigurat
   const crawler = new BasicCrawler({
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 2,
     maxConcurrency: 8,
-    proxyConfiguration,
+    // HAPUS proxyConfiguration dari sini
     async requestHandler({ request, sendRequest }) {
       const { candidate, start } = request.userData;
       try {
-        // sendRequest adalah fungsi bawaan crawlee yang sudah terintegrasi dengan proxy
+        // Ambil URL proxy secara dinamis jika proxyConfiguration tersedia
+        const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
+
         const response = await sendRequest({
           url: request.url,
           method: request.method,
           timeout: { request: timeout },
           throwHttpErrors: false,
+          proxyUrl: proxyUrl, // Masukkan proxy di sini
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' }
         });
         
