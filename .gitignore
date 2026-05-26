@@ -1,1 +1,16 @@
+# Dependencies
+node_modules/
 
+# Apify local storage (Sangat penting agar hasil scrape lokal tidak masuk GitHub )
+apify_storage/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS generated files
+.DS_Store
+Thumbs.db
