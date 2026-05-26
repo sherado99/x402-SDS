@@ -86,7 +86,7 @@ function isValidCandidate(candidate) {
   // Reject paths with newlines or markdown artifacts
   if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
 
-  // ✅ New: 
+  // Only accept endpoints with a price
   if (!candidate.rawPrice || candidate.rawPrice === '0') return false;
 
   return true;
@@ -329,28 +329,70 @@ async function scrapeStaticPages(base, timeout) {
   const crawler = new CheerioCrawler({
     maxRequestsPerCrawl: 20,
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
-    async requestHandler({ request, $, enqueueLinks }) {
-      const bodyText = $('body').text().toLowerCase();
-      const matched = keywords.filter((kw) => bodyText.includes(kw));
-      if (matched.length > 0) {
-        discovered.set(request.url, { url: request.url, html: $.html() });
-        console.log(`[SCRAPER] Found: ${request.url}`);
-      }
-      await enqueueLinks({
-        transformRequestFunction(req) {
-          try {
-            const links = $('a[href]').toArray();
-            for (const el of links) {
-              const href = $(el).attr('href') || '';
-              try {
-                const fullHref = new URL(href, request.url).href;
-                if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req;
-              } catch { /* invalid href */ }
+    async requestHandler({ request, response, $, enqueueLinks }) {
+      // Check content type to decide how to handle the response
+      const contentType = response?.headers?.['content-type'] || '';
+      
+      // If response is not HTML, try to parse it as JSON or plain text for endpoints
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        try {
+          // For JSON responses, try to extract endpoints directly
+          const bodyText = String(response?.body || '');
+          if (bodyText) {
+            // Send directly to universal extraction
+            const extracted = universalExtract(bodyText, `scraper:${request.url}`);
+            if (extracted.length > 0) {
+              discovered.set(request.url, { url: request.url, html: bodyText });
+              console.log(`[SCRAPER] Found JSON/Text endpoint data: ${request.url}`);
+              return;
             }
-          } catch { /* ignore */ }
-          return null;
-        },
-      });
+          }
+        } catch (err) {
+          console.log(`[SCRAPER] Error handling non-HTML response: ${err.message}`);
+        }
+        // If we couldn't extract anything, don't try Cheerio parsing
+        return;
+      }
+      
+      // Handle HTML responses with Cheerio
+      try {
+        const bodyText = $('body').text().toLowerCase();
+        const matched = keywords.filter((kw) => bodyText.includes(kw));
+        if (matched.length > 0) {
+          discovered.set(request.url, { url: request.url, html: $.html() });
+          console.log(`[SCRAPER] Found: ${request.url}`);
+        }
+        await enqueueLinks({
+          transformRequestFunction(req) {
+            try {
+              const links = $('a[href]').toArray();
+              for (const el of links) {
+                const href = $(el).attr('href') || '';
+                try {
+                  const fullHref = new URL(href, request.url).href;
+                  if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req;
+                } catch { /* invalid href */ }
+              }
+            } catch { /* ignore */ }
+            return null;
+          },
+        });
+      } catch (err) {
+        // If Cheerio parsing fails, try extracting from raw body
+        console.log(`[SCRAPER] Cheerio parsing failed for ${request.url}: ${err.message}`);
+        try {
+          const bodyText = String(response?.body || '');
+          if (bodyText) {
+            const extracted = universalExtract(bodyText, `scraper:${request.url}`);
+            if (extracted.length > 0) {
+              discovered.set(request.url, { url: request.url, html: bodyText });
+              console.log(`[SCRAPER] Extracted endpoints from raw body: ${request.url}`);
+            }
+          }
+        } catch (rawErr) {
+          console.log(`[SCRAPER] Failed to extract from raw body: ${rawErr.message}`);
+        }
+      }
     },
   });
   await crawler.run(startUrls);
@@ -497,8 +539,17 @@ let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAUL
 if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
 
 domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
+
+// Build target domains list. For .workers.dev domains, don't add "api." subdomain.
 const targetDomains = [domain];
-if (includeSubdomains) targetDomains.push(`api.${domain}`);
+if (includeSubdomains) {
+  const lowerDomain = domain.toLowerCase();
+  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
+    targetDomains.push(`api.${domain}`);
+  } else {
+    console.log('[SDS] Workers/Fly domain detected. Skipping "api." subdomain addition.');
+  }
+}
 
 const allResults = [];
 const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
