@@ -64,12 +64,19 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path: normalizePath('/tools/' + llmsAltMatch.trim().toLowerCase().replace(/\s+/g, '_')), method: 'GET', rawPrice: String(Math.round(parseFloat(llmsAltMatch) * 1_000_000)), network: '', asset: '', payTo: '', label: llmsAltMatch.trim(), description: llmsAltMatch.trim(), source: `universal:llms-alt:${sourceLabel}` });
   }
 
-          // ============================================================
-  // SMART BLOCK UI & PLAIN TEXT EXTRACTION (UPGRADE V2.1)
+            // ============================================================
+  // SMART BLOCK UI & PLAIN TEXT EXTRACTION (UPGRADE V3)
   // ============================================================
-  const cleanRaw = raw.replace(/<[a-zA-Z\/][^>]*>/g, '\n').replace(/\n\s*\n/g, '\n').trim();
+  // 1. Hapus <script> dan <style> beserta isinya agar teks tidak tertimbun kode JS
+  let cleanRaw = raw.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, ' ');
   
-  // PERBAIKAN 1: Gunakan [\s\n]* agar tahan terhadap banyak spasi/Enter
+  // 2. Lindungi simbol "< $" agar tidak dianggap sebagai tag HTML
+  cleanRaw = cleanRaw.replace(/<\s*\$/g, '&lt; $');
+  
+  // 3. Hapus semua tag HTML yang tersisa dan rapikan baris baru
+  cleanRaw = cleanRaw.replace(/<[^>]+>/g, '\n').replace(/\n\s*\n/g, '\n').trim();
+  
+  // 4. Pecah teks menjadi "Kartu" berdasarkan kata kunci HTTP Method
   let blocks = cleanRaw.split(/(?=\b(?:GET|POST|PUT|DELETE|PATCH)\b[\s\n]*\/)/i);
   
   if (blocks.length <= 1) {
@@ -77,7 +84,6 @@ export function universalExtract(text, sourceLabel = 'unknown') {
   }
 
   for (const block of blocks) {
-    // PERBAIKAN 2: Gunakan [\s\n]* di sini juga
     const pathMatch = block.match(/(?:GET|POST|PUT|DELETE|PATCH)?[\s\n]*(\/[a-zA-Z0-9_/\-{}.:]+)/i);
     if (!pathMatch) continue;
     
@@ -89,8 +95,8 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     const methodMatch = block.match(/(GET|POST|PUT|DELETE|PATCH)/i);
     const method = methodMatch ? methodMatch[1].toUpperCase() : 'GET';
 
-    // PERBAIKAN 3: Perlebar jarak bacaan menjadi 1000 karakter
-    const context = block.substring(0, 1000);
+    // Perlebar jarak bacaan menjadi 1500 karakter untuk keamanan
+    const context = block.substring(0, 1500);
     
     const priceMatch = context.match(/\$([\d.]+)/);
     const price = extractPrice(priceMatch ? priceMatch[1] : '');
@@ -100,9 +106,10 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     let label = '';
     
     for (let line of lines) {
-      if (line === method || line === path || /^(<|>)?\s*\$[\d.]+$/.test(line)) continue;
+      // Abaikan baris harga, termasuk yang memiliki simbol < atau &lt;
+      if (line === method || line === path || /^(<|>|&lt;|&gt;)?\s*\$[\d.]+$/.test(line)) continue;
       
-      let cleanLine = line.replace(path, '').replace(/(<|>)?\s*\$[\d.]+/, '').replace(new RegExp(`^${method}\\s*`, 'i'), '').replace(/^[-—:\s]+/, '').trim();
+      let cleanLine = line.replace(path, '').replace(/(<|>|&lt;|&gt;)?\s*\$[\d.]+/, '').replace(new RegExp(`^${method}\\s*`, 'i'), '').replace(/^[-—:\s]+/, '').trim();
       if (cleanLine.length < 4) continue;
 
       if (cleanLine.length > 35 && !description) {
