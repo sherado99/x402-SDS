@@ -55,7 +55,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
           candidates.push(normalizeCandidate({
             path,
             method: candidate.method || 'GET',
-            rawPrice: extractPrice(offer.maxAmountRequired || offer.amount || ''),
+            rawPrice: String(offer.maxAmountRequired || offer.amount || ''),
             network: offer.network || candidate.network || '',
             asset: offer.asset || candidate.asset || '',
             payTo: offer.payTo || candidate.payTo || '',
