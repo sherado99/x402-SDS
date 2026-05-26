@@ -114,7 +114,7 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// INTELLIGENT UNIVERSAL EXTRACTION ENGINE
+// INTELLIGENT UNIVERSAL EXTRACTION ENGINE (UPGRADED)
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
@@ -129,7 +129,25 @@ function universalExtract(text, sourceLabel = 'unknown') {
   }
 
   // ============================================================
-  // NEW: Strategy 0 - Non-standard llms.txt formats
+  // NEW: Strategy 0 - HTML list items with code + price + description
+  // Matches: <li><code>/path</code> - <strong>$0.01</strong> - Description</li>
+  // ============================================================
+  const htmlListPattern = /<li>\s*<code>(\/[^<]+)<\/code>\s*-\s*<strong>\$([\d.]+)<\/strong>\s*-\s*([^<]+)<\/li>/gi;
+  let htmlListMatch;
+  while ((htmlListMatch = htmlListPattern.exec(raw)) !== null) {
+    const path = htmlListMatch[1].trim();
+    const price = String(Math.round(parseFloat(htmlListMatch[2]) * 1_000_000));
+    const description = htmlListMatch[3].trim();
+    candidates.push({
+      path, method: 'GET', rawPrice: price,
+      network: '', asset: '', payTo: '',
+      label: description, description,
+      source: `universal:html-list:${sourceLabel}`,
+    });
+  }
+
+  // ============================================================
+  // Strategy 0.5 - Alternative llms.txt formats
   // Matches: - tool_name ($0.01): description
   // ============================================================
   const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
@@ -138,7 +156,6 @@ function universalExtract(text, sourceLabel = 'unknown') {
     const name = llmsMatch[1].trim();
     const price = String(Math.round(parseFloat(llmsMatch[2]) * 1_000_000));
     const description = llmsMatch[3].trim();
-    // Infer path from tool name (snake_case or kebab-case)
     const path = normalizePath('/tools/' + name.toLowerCase().replace(/\s+/g, '_'));
     candidates.push({
       path, method: 'GET', rawPrice: price,
@@ -195,17 +212,14 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (heading) previousHeading = heading;
   }
 
-  // ============================================================
-  // NEW: Strategy 2 - Non-standard JSON where keys are endpoints
-  // Matches: { "https://domain.com/path": { ... } }
-  // ============================================================
+  // -------- Strategy 2: JSON objects (including non-standard keys) --------
   try {
     const json = JSON.parse(raw);
     const walk = (obj) => {
       if (!obj || typeof obj !== 'object') return;
       if (Array.isArray(obj)) { obj.forEach(walk); return; }
       
-      // First, check if keys themselves are URLs (non-standard well-known format)
+      // Non-standard well-known format where keys are URLs
       for (const [key, value] of Object.entries(obj)) {
         if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
           const path = normalizePath(key);
