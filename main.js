@@ -183,6 +183,43 @@ function universalExtract(text, sourceLabel = 'unknown') {
     tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
   }
 
+// ============================================================
+// Strategi baru: Pendeteksi path dan harga di dalam <li>
+// ============================================================
+const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+let liMatch;
+while ((liMatch = liPattern.exec(raw)) !== null) {
+    const liContent = liMatch[1];
+
+    // 1. Cari kandidat path (dimulai dengan '/')
+    const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/);
+    if (!pathMatch) continue;
+
+    let path = pathMatch[1].trim();
+    if (path.startsWith('/')) path = normalizePath(path);
+    else continue;
+
+    // 2. Cari kandidat harga ($X.XXXX)
+    const priceMatch = liContent.match(/\$\s*([\d.]+)/);
+    if (!priceMatch) continue;
+
+    const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
+
+    // 3. Ambil deskripsi: teks terpanjang setelah tag terakhir
+    let description = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    // Potong jika terlalu panjang
+    if (description.length > 120) description = description.substring(0, 120) + '...';
+
+    candidates.push({
+        path, method: 'GET', rawPrice: price,
+        network: '', asset: '', payTo: '',
+        label: description || path,
+        description: description || path,
+        source: `universal:html-li:${sourceLabel}`,
+    });
+}
+
+
   // ============================================================
   // Strategy 0: Flexible HTML list items with code + price
   // Matches any <li> that contains a path-like code element and a $price
