@@ -10,9 +10,17 @@ function smartRouter(candidates, sourceLabel) {
     if (!cleanPath.startsWith('/') || cleanPath.length < 2) continue;
     if (cleanPath.includes('<') || cleanPath.includes('>')) continue;
     if (candidate.label && (candidate.label.includes('<html') || candidate.label.includes('<pre>') || candidate.label.includes('<code>'))) continue;
+    
     let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
-    if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
     let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
+    
+    // PEMBERSIH MARKDOWN: Menghapus teks seperti "**GET /api/concerts** — "
+    const markdownRegex = /^(\*\*|`|_)?(GET|POST|PUT|DELETE|PATCH)\s+[^*-]+(\*\*|`|_)?\s*[-—:]\s*/i;
+    cleanLabel = cleanLabel.replace(markdownRegex, '').trim();
+    cleanDesc = cleanDesc.replace(markdownRegex, '').trim();
+
+    if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
+    
     if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
       if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
     }
