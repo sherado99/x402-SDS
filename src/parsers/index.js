@@ -77,6 +77,9 @@ export function parseAllRawData(rawPaths, scrapedData) {
 }
 
 export function finalFilter(parsedCandidates, domain) {
+  // TAMPILKAN KE LOG AGAR KITA BISA MELIHATNYA
+  console.log('\n[DEBUG] Candidates before filter:', JSON.stringify(parsedCandidates, null, 2));
+
   return parsedCandidates.map(c => ({
     domain,
     path: c.path,
@@ -95,9 +98,10 @@ export function finalFilter(parsedCandidates, domain) {
     timestamp: new Date( ).toISOString(),
     auditHash: '',
   })).filter(row => {
+    // KITA LONGGARKAN FILTERNYA: Yang penting ada harganya (Price) atau ada Label-nya
     const hasPrice = row.price && row.price !== '0';
-    const hasDescription = row.description && row.description.length > 5;
     const hasLabel = row.label && row.label.length > 2;
-    return hasPrice && hasDescription && hasLabel;
+    
+    return hasPrice || hasLabel; // Menggunakan ATAU (||) bukan DAN (&&)
   });
 }
