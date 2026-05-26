@@ -90,7 +90,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
   return uniqCandidates(candidates).filter(isValidCandidate);
 }
 
-export function finalFilter(parsedCandidates, domain) {
+export function finalFilter(parsedCandidates, domain ) {
   return parsedCandidates.map(c => ({
     domain,
     path: c.path,
@@ -103,15 +103,16 @@ export function finalFilter(parsedCandidates, domain) {
     payTo: c.payTo || '',
     label: c.label || '',
     description: c.description || '',
-    // UBAH 4 BARIS INI:
-    httpStatus: c.httpStatus || '',
-    responseTimeMs: c.responseTimeMs || '',
+    // PERBAIKAN: Bungkus dengan String() agar menjadi teks
+    httpStatus: c.httpStatus ? String(c.httpStatus ) : '',
+    responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
     errorMessage: c.errorMessage || '',
     auditHash: c.auditHash || '',
-    timestamp: new Date( ).toISOString(),
+    timestamp: new Date().toISOString(),
   })).filter(row => {
     const hasPrice = row.price && row.price !== '0';
     const hasLabel = row.label && row.label.length > 2;
     return hasPrice || hasLabel;
   });
 }
+
