@@ -34,7 +34,7 @@ function normalizePath(rawPath) {
   let p = String(rawPath || '').trim();
   if (!p) return '';
   if (p.startsWith('http://') || p.startsWith('https://')) {
-    try { const url = new URL(p); p = `${url.pathname}${url.search || ''}`; } catch { /* ignore */ }
+    try { const url = new URL(p); p = `{url.pathname}{url.search || ''}`; } catch { /* ignore */ }
   }
   p = p.replace(/^\/api(?=\/)/i, '');
   p = p.replace(/\/+/g, '/');
