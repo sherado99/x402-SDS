@@ -47,11 +47,11 @@ export function parseAllRawData(rawPaths, scrapedData) {
     const { candidate, body, statusCode } = item;
     const path = normalizePath(candidate.path);
 
-    if (statusCode === 402) {
+        if (statusCode === 402) {
       try {
         const json = JSON.parse(body);
         if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
-          const offer = json.accepts;
+          const offer = json.accepts[0]; // <--- PERBAIKANNYA DI SINI (Tambahkan [0])
           candidates.push(normalizeCandidate({
             path,
             method: candidate.method || 'GET',
