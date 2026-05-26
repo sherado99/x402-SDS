@@ -1,3 +1,4 @@
+```javascript
 import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
@@ -129,20 +130,31 @@ function universalExtract(text, sourceLabel = 'unknown') {
   }
 
   // ============================================================
-  // NEW: Strategy 0 - HTML list items with code + price + description
-  // Matches: <li><code>/path</code> - <strong>$0.01</strong> - Description</li>
+  // NEW: Strategy 0 - Flexible HTML list items with code + price + description
+  // Matches any <li> that contains a <code>/path</code> and a $price nearby
   // ============================================================
-  const htmlListPattern = /<li>\s*<code>(\/[^<]+)<\/code>\s*-\s*<strong>\$([\d.]+)<\/strong>\s*-\s*([^<]+)<\/li>/gi;
-  let htmlListMatch;
-  while ((htmlListMatch = htmlListPattern.exec(raw)) !== null) {
-    const path = htmlListMatch[1].trim();
-    const price = String(Math.round(parseFloat(htmlListMatch[2]) * 1_000_000));
-    const description = htmlListMatch[3].trim();
+  const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+  let liMatch;
+  while ((liMatch = liPattern.exec(raw)) !== null) {
+    const liContent = liMatch[1];
+    const codeMatch = liContent.match(/<code>([^<]+)<\/code>/i);
+    if (!codeMatch) continue;
+    const path = codeMatch[1].trim();
+    if (!path.startsWith('/')) continue;
+    
+    const priceMatch = liContent.match(/\$([\d.]+)/);
+    if (!priceMatch) continue;
+    const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
+    
+    // Description: text after the last tag until </li>
+    const descMatch = liContent.match(/>([^<]{10,100})\s*$/);
+    const description = descMatch ? descMatch[1].trim() : path;
+    
     candidates.push({
       path, method: 'GET', rawPrice: price,
       network: '', asset: '', payTo: '',
       label: description, description,
-      source: `universal:html-list:${sourceLabel}`,
+      source: `universal:html-li:${sourceLabel}`,
     });
   }
 
@@ -619,3 +631,4 @@ const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, downlo
 await Actor.pushData(output);
 console.log(`Scan complete. ${output.length} endpoints found.`);
 await Actor.exit();
+```
