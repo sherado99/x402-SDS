@@ -1,4 +1,3 @@
-```javascript
 import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
@@ -876,4 +875,3 @@ const output     = finalResults.map(row => ({ ...row, download_docx: docxUrl, do
 await Actor.pushData(output);
 console.log(`\nScan complete. ${output.length} endpoints found.`);
 await Actor.exit();
-```
