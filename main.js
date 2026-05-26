@@ -183,93 +183,61 @@ function universalExtract(text, sourceLabel = 'unknown') {
     tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
   }
 
+
 // ============================================================
-// Strategi baru: Pendeteksi path dan harga di dalam <li>
+// Strategy 0: Combined Flexible HTML <li> Extraction
 // ============================================================
 const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
 let liMatch;
 while ((liMatch = liPattern.exec(raw)) !== null) {
-    const liContent = liMatch[1];
+  const liContent = liMatch[1];
 
-    // 1. Cari kandidat path (dimulai dengan '/')
-    const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/);
-    if (!pathMatch) continue;
+  // --- Selektif dulu: cari di <code>, <span>, <a href> ---
+  let path = '';
+  const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) ||
+                    liContent.match(/<span[^>]*class="[^"]*path[^"]*"[^>]*>(\/[^<]+)<\/span>/i) ||
+                    liContent.match(/<span>(\/[^<]+)<\/span>/i);
+  const hrefMatch = liContent.match(/href="(\/[^"]+)"/i);
 
-    let path = pathMatch[1].trim();
-    if (path.startsWith('/')) path = normalizePath(path);
-    else continue;
-
-    // 2. Cari kandidat harga ($X.XXXX)
-    const priceMatch = liContent.match(/\$\s*([\d.]+)/);
-    if (!priceMatch) continue;
-
-    const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
-
-    // 3. Ambil deskripsi: teks terpanjang setelah tag terakhir
-    let description = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    // Potong jika terlalu panjang
-    if (description.length > 120) description = description.substring(0, 120) + '...';
-
-    candidates.push({
-        path, method: 'GET', rawPrice: price,
-        network: '', asset: '', payTo: '',
-        label: description || path,
-        description: description || path,
-        source: `universal:html-li:${sourceLabel}`,
-    });
-}
-
-
-  // ============================================================
-  // Strategy 0: Flexible HTML list items with code + price
-  // Matches any <li> that contains a path-like code element and a $price
-  // ============================================================
-  const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
-  let liMatch;
-  while ((liMatch = liPattern.exec(raw)) !== null) {
-    const liContent = liMatch[1];
-    
-    // Find path from: <code>, <span class="path">, or <a href="/...">
-    let path = '';
-    const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) || 
-                      liContent.match(/<span[^>]*class="[^"]*path[^"]*"[^>]*>(\/[^<]+)<\/span>/i) ||
-                      liContent.match(/<span>(\/[^<]+)<\/span>/i);
-    const hrefMatch = liContent.match(/href="(\/[^"]+)"/i);
-    
-    if (codeMatch) {
-      path = codeMatch[1].trim();
-    } else if (hrefMatch) {
-      path = hrefMatch[1].trim();
-    }
-    
-    if (!path || !path.startsWith('/')) continue;
-    if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
-    
-    // Find price: $X.XX anywhere in the <li>
-    const priceMatch = liContent.match(/\$([\d.]+)/);
-    const price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
-    
-    // Description: text after path and price, or the longest text snippet
-    let description = '';
-    const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) || 
-                      liContent.match(/- ([^<]{10,100})/);
-    if (descMatch) {
-      description = descMatch[1].trim();
-    } else {
-      // Strip all tags and get the longest text chunk
-      const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      const parts = stripped.split(/\s{2,}/);
-      description = parts.find(p => p.length > 15) || stripped.substring(0, 100);
-    }
-    
-    candidates.push({
-      path, method: 'GET', rawPrice: price,
-      network: '', asset: '', payTo: '',
-      label: description || path,
-      description: description || path,
-      source: `universal:html-li:${sourceLabel}`,
-    });
+  if (codeMatch) {
+    path = codeMatch[1].trim();
+  } else if (hrefMatch) {
+    path = hrefMatch[1].trim();
   }
+
+  // --- Agresif: kalau selektif gagal, cari garis miring apa saja ---
+  if (!path || !path.startsWith('/')) {
+    const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/);
+    if (pathMatch) path = pathMatch[1].trim();
+  }
+
+  if (!path || !path.startsWith('/')) continue;
+  if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
+
+  // --- Cari harga ---
+  const priceMatch = liContent.match(/\$\s*([\d.]+)/);
+  if (!priceMatch) continue;
+  const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
+
+  // --- Deskripsi: selektif dulu, lalu agresif ---
+  let description = '';
+  const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) ||
+                    liContent.match(/- ([^<]{10,100})/);
+  if (descMatch) {
+    description = descMatch[1].trim();
+  } else {
+    const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    description = stripped.substring(0, 120);
+  }
+
+  candidates.push({
+    path, method: 'GET', rawPrice: price,
+    network: '', asset: '', payTo: '',
+    label: description || path,
+    description: description || path,
+    source: `universal:html-li:${sourceLabel}`,
+  });
+}
 
   // ============================================================
   // Strategy 0.5: Alternative llms.txt formats
