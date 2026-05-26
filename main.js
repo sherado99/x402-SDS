@@ -1,3 +1,4 @@
+```javascript
 import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
@@ -111,17 +112,36 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// Utility fetch
+// Proxy helper (otomatis residential jika tersedia)
 // ============================================================
-async function fetchTextSource(url, timeout, label) {
+function getProxyAgent() {
   try {
-    const response = await got(url, {
+    // Apify residential proxy tersedia otomatis di platform
+    const proxyUrl = process.env.APIFY_PROXY_PASSWORD
+      ? `http://auto:${process.env.APIFY_PROXY_PASSWORD}@proxy.apify.com:8000`
+      : null;
+    if (proxyUrl) {
+      const { HttpsProxyAgent } = require('https-proxy-agent');
+      return new HttpsProxyAgent(proxyUrl);
+    }
+  } catch (e) { /* tidak tersedia, lanjut tanpa proxy */ }
+  return null;
+}
+
+// ============================================================
+// STAGE 1 – CRAWLER: kumpulkan SEMUA konten mentah dari sumber
+// ============================================================
+async function fetchTextSource(url, timeout, label, proxyAgent) {
+  try {
+    const options = {
       method: 'GET',
       timeout: { request: timeout },
       throwHttpErrors: false,
       retry: { limit: 0 },
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
-    });
+    };
+    if (proxyAgent) options.agent = { https: proxyAgent };
+    const response = await got(url, options);
     if (response.statusCode === 200 && response.body) {
       console.log(`[FETCH] ${label}: ${response.body.length} bytes`);
       return response.body;
@@ -132,10 +152,7 @@ async function fetchTextSource(url, timeout, label) {
   return null;
 }
 
-// ============================================================
-// STAGE 1 – CRAWLER: kumpulkan SEMUA path mentah (belum parsing)
-// ============================================================
-async function crawlAPISources(base, timeout) {
+async function crawlAPISources(base, timeout, proxyAgent) {
   const rawPaths = [];
   const sources = [
     { url: `https://${base}/.well-known/x402`,                label: 'well-known-x402' },
@@ -150,13 +167,13 @@ async function crawlAPISources(base, timeout) {
     { url: `https://${base}/api-docs.json`,                   label: 'api-docs' },
   ];
   for (const src of sources) {
-    const text = await fetchTextSource(src.url, timeout, src.label);
+    const text = await fetchTextSource(src.url, timeout, src.label, proxyAgent);
     if (text) rawPaths.push({ source: src.label, content: text });
   }
   return rawPaths;
 }
 
-async function crawlHTMLPages(base, timeout) {
+async function crawlHTMLPages(base, timeout, proxyAgent) {
   const startUrls = [
     `https://${base}`,
     `https://${base}/docs`,
@@ -173,6 +190,7 @@ async function crawlHTMLPages(base, timeout) {
   const crawler = new CheerioCrawler({
     maxRequestsPerCrawl: 20,
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
+    proxyConfiguration: proxyAgent ? { groups: ['RESIDENTIAL'] } : undefined,
     async requestHandler({ request, response, $, enqueueLinks }) {
       const contentType = response?.headers?.['content-type'] || '';
       if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
@@ -212,9 +230,9 @@ async function crawlHTMLPages(base, timeout) {
 }
 
 // ============================================================
-// STAGE 2 – SCRAPER: kumpulkan respons mentah dari setiap path
+// STAGE 2 – SCRAPER: panggil setiap path, ambil respons mentah
 // ============================================================
-async function scrapeEndpoints(base, candidates, timeout) {
+async function scrapeEndpoints(base, candidates, timeout, proxyAgent) {
   const scraped = [];
   const queue = [...candidates];
   async function worker() {
@@ -226,13 +244,15 @@ async function scrapeEndpoints(base, candidates, timeout) {
       const url    = `https://${base}${path}`;
       const start  = Date.now();
       try {
-        const response = await got(url, {
+        const options = {
           method,
           timeout: { request: timeout },
           throwHttpErrors: false,
           retry: { limit: 0 },
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
-        });
+        };
+        if (proxyAgent) options.agent = { https: proxyAgent };
+        const response = await got(url, options);
         scraped.push({
           candidate: item,
           statusCode: response.statusCode,
@@ -300,7 +320,7 @@ function extractPrice(pricing) {
   return '';
 }
 
-// --- 4b. Precision Parsers (hanya dipakai di akhir) ---
+// --- 4b. Precision Parsers ---
 function parseWellKnownX402(text) {
   const candidates = [];
   try {
@@ -513,7 +533,7 @@ function parseJSONLike(text, sourceLabel) {
   return candidates;
 }
 
-// --- 4c. Universal Extractor (tetap seperti asli) ---
+// --- 4c. Universal Extractor ---
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
@@ -604,7 +624,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
   return candidates;
 }
 
-// --- 4d. Smart Router (tetap seperti asli) ---
+// --- 4d. Smart Router ---
 function smartRouter(candidates, sourceLabel) {
   const cleaned = [];
   for (const candidate of candidates) {
@@ -640,7 +660,6 @@ function parseAllRawData(rawPaths, scrapedData) {
     else if (source === 'mcp.json' || source === 'api-docs') parsed = parseJSONLike(content, source);
 
     if (parsed.length === 0) {
-      // Fallback ke universalExtract jika parser spesifik tidak menghasilkan apa-apa
       parsed = universalExtract(content, source);
     }
     const cleaned = smartRouter(parsed, source);
@@ -654,7 +673,6 @@ function parseAllRawData(rawPaths, scrapedData) {
     const { candidate, body, statusCode } = item;
     const path = normalizePath(candidate.path);
 
-    // Coba 402 JSON
     if (statusCode === 402) {
       try {
         const json = JSON.parse(body);
@@ -676,7 +694,6 @@ function parseAllRawData(rawPaths, scrapedData) {
       } catch { /* not JSON */ }
     }
 
-    // Fallback: universalExtract pada body
     const extracted = universalExtract(body, `scraper:${path}`);
     const cleaned = smartRouter(extracted, 'scraper');
     if (cleaned.length > 0) candidates.push(...cleaned);
@@ -688,9 +705,9 @@ function parseAllRawData(rawPaths, scrapedData) {
 // ============================================================
 // FINAL FILTER: hanya endpoint lengkap yang lolos
 // ============================================================
-function finalFilter(parsedCandidates) {
+function finalFilter(parsedCandidates, domain) {
   return parsedCandidates.map(c => ({
-    domain: '',
+    domain,
     path: c.path,
     status: 'public_info',
     x402Version: '',
@@ -760,77 +777,90 @@ async function generatePDF(domain, results) {
 }
 
 // ============================================================
-// Main
+// MAIN PIPELINE
 // ============================================================
-const input = (await Actor.getInput()) || {};
-let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAULT_TIMEOUT, includeSubdomains = false } = input;
-if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
+async function runPipelineForDomain(base, specificPath, timeout, maxPaths, proxyAgent) {
+  console.log(`\n[SDS] === Pipeline for ${base}${specificPath || ''} ===\n`);
 
-domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
-const targetDomains = [domain];
-if (includeSubdomains) {
-  const lowerDomain = domain.toLowerCase();
-  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) targetDomains.push(`api.${domain}`);
-}
-
-const allResults = [];
-const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
-
-for (const base of targetDomains) {
-  console.log(`\n[SDS] === Pipeline for ${base} ===\n`);
-
-  // ============================================================
-  // STAGE 1 – CRAWLER: kumpulkan SEMUA path mentah
-  // ============================================================
-  let rawPaths = [];
-  if (manualList.length > 0) {
-    console.log('[CRAWLER] Manual path list provided, skipping source discovery.');
-    rawPaths = []; // manual path tidak butuh API source crawling
-  } else {
-    rawPaths = await crawlAPISources(base, timeout);
+  // Mode spesifik path: langsung scrape, scan, parse, filter
+  if (specificPath) {
+    console.log('[SDS] Specific path mode – skipping discovery.');
+    const candidate = normalizeCandidate({ path: specificPath, method: 'GET', source: 'manual' });
+    const scrapedData = await scrapeEndpoints(base, [candidate], timeout, proxyAgent);
+    const scannedData = scanResponses(scrapedData);
+    const parsedCandidates = parseAllRawData([], scannedData); // hanya dari body
+    const final = finalFilter(parsedCandidates, base);
+    return final;
   }
-  const htmlPages = manualList.length > 0 ? [] : await crawlHTMLPages(base, timeout);
-  console.log(`[CRAWLER] ${rawPaths.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // Gabungkan semua konten mentah: API sources + HTML pages
+  // Mode domain: pipeline lengkap
+  // 1. CRAWLER
+  const rawAPISources = await crawlAPISources(base, timeout, proxyAgent);
+  const htmlPages = await crawlHTMLPages(base, timeout, proxyAgent);
   const allRawContent = [
-    ...rawPaths,
+    ...rawAPISources,
     ...htmlPages.map(p => ({ source: 'scraper', content: p.html })),
   ];
+  console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // ============================================================
-  // STAGE 2 – SCRAPER: panggil setiap path, ambil respons mentah
-  // ============================================================
-  let candidates;
-  if (manualList.length > 0) {
-    candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
-  } else {
-    // Gunakan dictionary dulu kalau tidak ada manual list, untuk dikirim ke scraper
-    candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
-  }
-  console.log(`[SCRAPER] ${candidates.length} paths to scrape`);
+  // 2. SCRAPER (dari dictionary)
+  const dictionaryCandidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+  console.log(`[SCRAPER] ${dictionaryCandidates.length} dictionary paths to scrape`);
+  const scrapedData = await scrapeEndpoints(base, dictionaryCandidates, timeout, proxyAgent);
 
-  const scrapedData = await scrapeEndpoints(base, candidates, timeout);
-
-  // ============================================================
-  // STAGE 3 – SCANNER: baca respons, catat status & hash
-  // ============================================================
+  // 3. SCANNER
   const scannedData = scanResponses(scrapedData);
   console.log(`[SCANNER] ${scannedData.length} responses scanned`);
 
-  // ============================================================
-  // STAGE 4 – PARSER: semua parsing dijalankan DI AKHIR
-  // ============================================================
+  // 4. PARSER
   const parsedCandidates = parseAllRawData(allRawContent, scannedData);
   console.log(`[PARSER] ${parsedCandidates.length} total candidates after parsing`);
 
-  // ============================================================
-  // STAGE 5 – FINAL FILTER
-  // ============================================================
-  const final = finalFilter(parsedCandidates);
+  // 5. FINAL FILTER
+  const final = finalFilter(parsedCandidates, base);
   console.log(`[FINAL] ${final.length} complete endpoints after final filter`);
 
+  return final;
+}
+
+// ============================================================
+// MAIN
+// ============================================================
+const input = (await Actor.getInput()) || {};
+let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAULT_TIMEOUT } = input;
+if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
+
+// Parse domain dan specificPath
+let specificPath = null;
+domain = domain.trim();
+const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
+if (urlMatch) {
+  domain = urlMatch[2]; // hostname saja
+  if (urlMatch[3]) {
+    specificPath = normalizePath(urlMatch[3]);
+  }
+}
+
+// Proxy agent otomatis
+const proxyAgent = getProxyAgent();
+
+const allResults = [];
+
+// Jika ada specificPath, hanya proses domain utama
+if (specificPath) {
+  const final = await runPipelineForDomain(domain, specificPath, timeout, maxPaths, proxyAgent);
   allResults.push(...final);
+} else {
+  // Mode domain: proses domain utama + subdomain otomatis (kecuali workers.dev/fly.dev)
+  const targetDomains = [domain];
+  const lowerDomain = domain.toLowerCase();
+  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
+    targetDomains.push(`api.${domain}`);
+  }
+  for (const base of targetDomains) {
+    const final = await runPipelineForDomain(base, null, timeout, maxPaths, proxyAgent);
+    allResults.push(...final);
+  }
 }
 
 // ============================================================
@@ -846,3 +876,4 @@ const output     = finalResults.map(row => ({ ...row, download_docx: docxUrl, do
 await Actor.pushData(output);
 console.log(`\nScan complete. ${output.length} endpoints found.`);
 await Actor.exit();
+```
