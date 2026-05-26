@@ -112,43 +112,69 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
+// ULTIMATE PRICE EXTRACTOR (semua kemungkinan)
+// ============================================================
+function extractPrice(pricing) {
+  if (!pricing) return '';
+  const raw = String(pricing).trim();
+  if (!raw) return '';
+
+  // Array of regex patterns — dari yang paling spesifik ke paling umum
+  const patterns = [
+    // "US$0.01", "US$ 0.01"
+    /US\$\s*([\d.]+)/i,
+    // "$0.01 USD", "$0.01 USDC"
+    /\$\s*([\d.]+)\s*(?:USD|USDC|usd|usdc)/i,
+    // "0.01 USDC", "0.01 USD"
+    /([\d.]+)\s*(?:USDC|USD|usd|usdc)/i,
+    // "$0.01"
+    /\$\s*([\d.]+)/,
+    // "Price: 0.01"
+    /Price:\s*([\d.]+)/i,
+    // "0.01 per request"
+    /([\d.]+)\s*per\s+request/i,
+    // Plain number if it's the only thing (fallback)
+    /^([\d.]+)$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    if (match) {
+      const price = String(Math.round(parseFloat(match[1]) * 1_000_000));
+      console.log(`[PRICE-EXTRACT] Pattern matched: "${raw}" → ${price} atomic units`);
+      return price;
+    }
+  }
+
+  // Jika pricing adalah number murni
+  if (typeof pricing === 'number') return String(Math.round(pricing * 1_000_000));
+  if (typeof pricing === 'string' && !isNaN(parseFloat(pricing))) return String(Math.round(parseFloat(pricing) * 1_000_000));
+
+  return '';
+}
+
+// ============================================================
 // SMART ROUTER – Membersihkan artefak dan menyaring sampah
 // ============================================================
 function smartRouter(candidates, sourceLabel) {
   const cleaned = [];
-
   for (const candidate of candidates) {
-    // 1. Bersihkan path dari artefak markdown / backtick / newline / tag HTML
-    let cleanPath = candidate.path
-      .replace(/[`\\\n\r<>]/g, '')   // hapus backtick, newline, tag HTML
-      .trim();
-
-    // 2. TOLAK KANDIDAT SAMPAH
+    let cleanPath = candidate.path.replace(/[`\\\n\r<>]/g, '').trim();
     if (!cleanPath.startsWith('/') || cleanPath.length < 2) continue;
     if (cleanPath.includes('<') || cleanPath.includes('>')) continue;
-    // Tolak jika label mengandung tag HTML mentah
     if (candidate.label && (candidate.label.includes('<html') || candidate.label.includes('<pre>') || candidate.label.includes('<code>'))) continue;
 
-    // 3. Bersihkan label
     let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
     if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
-
-    // 4. Bersihkan description
     let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
 
-    // 5. Untuk sumber universal, tolak jika tidak ada harga
+    // Untuk sumber universal, tolak jika tidak ada harga
     if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
       if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
     }
 
-    cleaned.push({
-      ...candidate,
-      path:        cleanPath,
-      label:       cleanLabel,
-      description: cleanDesc,
-    });
+    cleaned.push({ ...candidate, path: cleanPath, label: cleanLabel, description: cleanDesc });
   }
-
   return cleaned;
 }
 
@@ -159,17 +185,6 @@ function parseWellKnownX402(text) {
   const candidates = [];
   try {
     const data = JSON.parse(text);
-    const extractPrice = (pricing) => {
-      if (!pricing) return '';
-      if (typeof pricing.price === 'number') return String(Math.round(pricing.price * 1_000_000));
-      if (typeof pricing.price === 'string') { const m = pricing.price.match(/\$?([\d.]+)/); if (m) return String(Math.round(parseFloat(m[1]) * 1_000_000)); }
-      if (typeof pricing.pricePerSource === 'number') return String(Math.round(pricing.pricePerSource * 1_000_000));
-      if (typeof pricing.inputPerMillionTokens === 'number') return String(Math.round(pricing.inputPerMillionTokens * 1_000_000));
-      if (typeof pricing.pricePerCall === 'number') return String(Math.round(pricing.pricePerCall * 1_000_000));
-      if (typeof pricing.perRequest === 'number') return String(Math.round(pricing.perRequest * 1_000_000));
-      if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1_000_000));
-      return '';
-    };
     if (Array.isArray(data.resources)) {
       for (const res of data.resources) {
         if (typeof res === 'object' && res) {
@@ -177,10 +192,10 @@ function parseWellKnownX402(text) {
           if (!path) continue;
           candidates.push(normalizeCandidate({
             path, method: res.method || 'GET',
-            rawPrice: extractPrice(res.pricing || res),
+            rawPrice: extractPrice(res.pricing || res.price || res.amount || res.cost || ''),
             network: res.network || data.network || '',
             asset: res.asset || data.asset || '',
-            label: res.name || res.id || '',
+            label: res.name || res.id || res.label || '',
             description: res.description || '',
             source: 'well-known-x402',
           }));
@@ -201,8 +216,10 @@ function parseWellKnownX402(text) {
       for (const svc of data.services) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
-        let rawPrice = extractPrice(svc.pricing || svc.price || {});
-        if (!rawPrice && Array.isArray(svc.models) && svc.models.length > 0) rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
+        let rawPrice = extractPrice(svc.pricing || svc.price || svc.amount || svc.cost || '');
+        if (!rawPrice && Array.isArray(svc.models) && svc.models.length > 0) {
+          rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || svc.models[0].amount || svc.models[0].cost || '');
+        }
         const payment = svc.payment || {};
         candidates.push(normalizeCandidate({
           path, method: svc.method || 'POST', rawPrice,
@@ -228,7 +245,7 @@ function parseAgentCard(text) {
       if (!path) continue;
       candidates.push(normalizeCandidate({
         path, method: svc.method || 'GET',
-        rawPrice: String(svc.price || svc.cost || ''),
+        rawPrice: extractPrice(svc.price || svc.cost || svc.amount || ''),
         network: svc.network || '',
         asset: svc.asset || '',
         label: svc.name || svc.id || '',
@@ -251,21 +268,21 @@ function parseOpenAPI(text) {
       let price = '', network = '', asset = '', description = '';
       if (operation['x-payment-info']) {
         const pi = operation['x-payment-info'];
-        price = String(pi.price || pi.amount || '');
+        price = extractPrice(pi.price || pi.amount || '');
         network = pi.network || ''; asset = pi.asset || pi.token || '';
         description = pi.description || '';
       }
       const resp402 = operation.responses?.['402'];
       if (resp402?.content?.['application/json']?.example?.accepts) {
         const offer = resp402.content['application/json'].example.accepts[0] || {};
-        price = price || String(offer.maxAmountRequired || offer.amount || '');
+        price = price || extractPrice(offer.maxAmountRequired || offer.amount || '');
         network = network || offer.network || '';
         asset = asset || offer.asset || '';
         description = description || offer.description || operation.description || '';
       }
       if (!price && spec['x-payment-info']) {
         const pi = spec['x-payment-info'];
-        price = String(pi.price || '');
+        price = extractPrice(pi.price || '');
         network = network || pi.network || '';
         asset = asset || pi.asset || '';
       }
@@ -288,11 +305,8 @@ function parseHealth(text) {
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
       for (const [path, info] of Object.entries(data.endpoints)) {
         let rawPrice = ''; const network = data.network || '';
-        if (typeof info.price === 'string') {
-          const match = info.price.match(/\$([\d.]+)/);
-          if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1_000_000));
-          else if (info.price === 'free' || info.price === '0') rawPrice = '0';
-        } else if (typeof info.price === 'number') rawPrice = String(info.price);
+        if (typeof info.price === 'string') rawPrice = extractPrice(info.price);
+        else if (typeof info.price === 'number') rawPrice = String(info.price);
         candidates.push(normalizeCandidate({
           path, method: 'GET', rawPrice, network, asset: '',
           label: info.description || path, description: info.description || '', source: '/health',
@@ -305,7 +319,7 @@ function parseHealth(text) {
         if (!path) continue;
         candidates.push(normalizeCandidate({
           path, method: svc.method || 'GET',
-          rawPrice: String(svc.price || svc.x402Price || ''),
+          rawPrice: extractPrice(svc.price || svc.x402Price || ''),
           network: svc.network || data.network || '',
           asset: svc.asset || '',
           label: svc.name || svc.id || svc.description || '',
@@ -343,9 +357,8 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (!path || !path.startsWith('/')) { const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/); if (pathMatch) path = pathMatch[1].trim(); }
     if (!path || !path.startsWith('/')) continue;
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
-    const priceMatch = liContent.match(/\$\s*([\d.]+)/);
-    if (!priceMatch) continue;
-    const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
+    const price = extractPrice(liContent.match(/\$\s*([\d.]+)/) ? liContent.match(/\$\s*([\d.]+)/)[0] : '');
+    if (!price) continue;
     let description = '';
     const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) || liContent.match(/- ([^<]{10,100})/);
     if (descMatch) description = descMatch[1].trim();
@@ -363,9 +376,9 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (!pathMatch) { if (heading) previousHeading = heading; continue; }
     const method = pathMatch[0].split(/\s+/)[0].toUpperCase();
     const path   = pathMatch[1];
-    const priceMatch = block.match(/Price:\s*\$?([\d.]+)/i);
-    let price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
-    if (!price) { const headingLower = heading.toLowerCase(); for (const [key, val] of tablePrices) if (headingLower.includes(key) || key.includes(headingLower)) { price = val; break; } }
+    const price = extractPrice(block.match(/Price:\s*\$?([\d.]+)/i) ? block.match(/Price:\s*\$?([\d.]+)/i)[0] : '');
+    let finalPrice = price;
+    if (!finalPrice) { const headingLower = heading.toLowerCase(); for (const [key, val] of tablePrices) if (headingLower.includes(key) || key.includes(headingLower)) { finalPrice = val; break; } }
     const cleanHeading = heading.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '').trim();
     let label = cleanHeading || previousHeading || '';
     if (label.includes('\n') || label.includes('#')) label = previousHeading || '';
@@ -374,7 +387,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     let description = '';
     for (const line of lines) { const trimmed = line.trim(); if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.includes('Price:')) continue; if (trimmed.length > 15) { description = trimmed; break; } }
     if (!description) description = label;
-    candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label, description, source: `universal:md:${sourceLabel}` });
+    candidates.push({ path, method, rawPrice: finalPrice, network: '', asset: '', payTo: '', label, description, source: `universal:md:${sourceLabel}` });
     if (heading) previousHeading = heading;
   }
 
@@ -382,11 +395,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
   const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
   let llmsAltMatch;
   while ((llmsAltMatch = llmsAltPattern.exec(raw)) !== null) {
-    const name = llmsAltMatch[1].trim();
-    const price = String(Math.round(parseFloat(llmsAltMatch[2]) * 1_000_000));
-    const description = llmsAltMatch[3].trim();
-    const path = normalizePath('/tools/' + name.toLowerCase().replace(/\s+/g, '_'));
-    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: name, description, source: `universal:llms-alt:${sourceLabel}` });
+    candidates.push({ path: normalizePath('/tools/' + llmsAltMatch[1].trim().toLowerCase().replace(/\s+/g, '_')), method: 'GET', rawPrice: String(Math.round(parseFloat(llmsAltMatch[2]) * 1_000_000)), network: '', asset: '', payTo: '', label: llmsAltMatch[1].trim(), description: llmsAltMatch[3].trim(), source: `universal:llms-alt:${sourceLabel}` });
   }
 
   // HTML href extraction
@@ -397,21 +406,21 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
     if (path.includes('/_next/') || path.includes('/static/')) continue;
     const context = raw.substring(Math.max(0, match.index - 200), match.index + 300);
-    const priceMatch = context.match(/\$([\d.]+)/);
+    const price = extractPrice(context.match(/\$([\d.]+)/) ? context.match(/\$([\d.]+)/)[0] : '');
     const labelMatch = context.match(/>([^<]{5,50})<\/a>/);
-    candidates.push({ path, method: 'GET', rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '', network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
+    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
   }
 
-  // Plain text (safe regex)
+  // Plain text
   const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n"\]\},]+)/gi);
   for (const match of plainMatches) {
     const method = match[1].toUpperCase();
     const path   = match[2].replace(/[^a-zA-Z0-9_\/.-]/g, '');
     if (!path.startsWith('/')) continue;
     const context = raw.substring(Math.max(0, match.index - 50), match.index + 200);
-    const priceMatch = context.match(/\$([\d.]+)/);
+    const price = extractPrice(context.match(/\$([\d.]+)/) ? context.match(/\$([\d.]+)/)[0] : '');
     const descMatch  = context.match(/-\s*(.{10,100})$/m);
-    candidates.push({ path, method, rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '', network: '', asset: '', payTo: '', label: descMatch ? descMatch[1].trim() : '', description: descMatch ? descMatch[1].trim() : '', source: `universal:text:${sourceLabel}` });
+    candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label: descMatch ? descMatch[1].trim() : '', description: descMatch ? descMatch[1].trim() : '', source: `universal:text:${sourceLabel}` });
   }
 
   return candidates;
@@ -473,9 +482,7 @@ async function fetchTextSource(url, timeout, label) {
 async function runFullPipeline(base, timeout) {
   const allCandidates = [];
 
-  // ============================================================
   // FASE 1: KERAHKAN PASUKAN GERILYA (Crawler + Universal Parser)
-  // ============================================================
   console.log('[PIPELINE] Phase 1: Deploying guerrilla forces (Crawler + Universal Parser)...');
   const scraperPages = await crawlPages(base, timeout);
   for (const page of scraperPages) {
@@ -485,9 +492,7 @@ async function runFullPipeline(base, timeout) {
     allCandidates.push(...cleaned);
   }
 
-  // ============================================================
   // FASE 2: KERAHKAN PASUKAN PRESISI (Precision Parsers)
-  // ============================================================
   console.log('[PIPELINE] Phase 2: Deploying precision forces (Precision Parsers)...');
   const precisionSources = [
     { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402', parser: parseWellKnownX402 },
@@ -508,9 +513,7 @@ async function runFullPipeline(base, timeout) {
     allCandidates.push(...cleaned);
   }
 
-  // ============================================================
   // FASE 3: TAMBAHAN (llms.txt, mcp.json, api-docs → Universal Parser)
-  // ============================================================
   console.log('[PIPELINE] Phase 3: Additional sources (llms.txt, mcp.json)...');
   const extraSources = [
     { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
@@ -627,12 +630,10 @@ for (const base of targetDomains) {
 
   let candidates = [];
 
-  // JIKA ADA PATH MANUAL, LANGSUNG GUNAKAN ITU
   if (manualList.length > 0) {
     console.log(`[SDS] Manual paths provided, skipping discovery. Using ${manualList.length} paths.`);
     candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
   } else {
-    // JIKA TIDAK, JALANKAN FULL PIPELINE
     console.log('[SDS] No manual paths. Running full pipeline.');
     candidates = await runFullPipeline(base, timeout);
 
