@@ -10,8 +10,8 @@ await Actor.init();
 // ============================================================
 // Config
 // ============================================================
-const DEFAULT_TIMEOUT    = 5000;
-const DEFAULT_MAX_PATHS  = 100;
+const DEFAULT_TIMEOUT     = 5000;
+const DEFAULT_MAX_PATHS   = 100;
 const DEFAULT_CONCURRENCY = 8;
 
 const BUILT_IN_DICTIONARY = [
@@ -111,8 +111,173 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// Ultimate Price Extractor
+// Utility fetch
 // ============================================================
+async function fetchTextSource(url, timeout, label) {
+  try {
+    const response = await got(url, {
+      method: 'GET',
+      timeout: { request: timeout },
+      throwHttpErrors: false,
+      retry: { limit: 0 },
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
+    });
+    if (response.statusCode === 200 && response.body) {
+      console.log(`[FETCH] ${label}: ${response.body.length} bytes`);
+      return response.body;
+    }
+  } catch (err) {
+    console.log(`[FETCH] ${label} error: ${err.message}`);
+  }
+  return null;
+}
+
+// ============================================================
+// STAGE 1 – CRAWLER: kumpulkan SEMUA path mentah (belum parsing)
+// ============================================================
+async function crawlAPISources(base, timeout) {
+  const rawPaths = [];
+  const sources = [
+    { url: `https://${base}/.well-known/x402`,                label: 'well-known-x402' },
+    { url: `https://${base}/.well-known/agent-card.json`,     label: 'agent-card' },
+    { url: `https://${base}/.well-known/agent.json`,          label: 'agent.json' },
+    { url: `https://${base}/.well-known/agent-services.json`, label: 'agent-services' },
+    { url: `https://${base}/openapi.json`,                    label: 'openapi' },
+    { url: `https://${base}/swagger.json`,                    label: 'swagger' },
+    { url: `https://${base}/health`,                          label: 'health' },
+    { url: `https://${base}/llms.txt`,                        label: 'llms.txt' },
+    { url: `https://${base}/.well-known/mcp.json`,            label: 'mcp.json' },
+    { url: `https://${base}/api-docs.json`,                   label: 'api-docs' },
+  ];
+  for (const src of sources) {
+    const text = await fetchTextSource(src.url, timeout, src.label);
+    if (text) rawPaths.push({ source: src.label, content: text });
+  }
+  return rawPaths;
+}
+
+async function crawlHTMLPages(base, timeout) {
+  const startUrls = [
+    `https://${base}`,
+    `https://${base}/docs`,
+    `https://${base}/api`,
+    `https://${base}/developers`,
+    `https://${base}/pricing`,
+  ];
+  const discovered = new Map();
+  const keywords = [
+    'x402', 'agent', 'payment', 'endpoint', 'pricing', 'service',
+    '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /',
+    'base url', 'api reference', 'pricing summary',
+  ];
+  const crawler = new CheerioCrawler({
+    maxRequestsPerCrawl: 20,
+    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
+    async requestHandler({ request, response, $, enqueueLinks }) {
+      const contentType = response?.headers?.['content-type'] || '';
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        try {
+          const bodyText = String(response?.body || '');
+          if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
+        } catch (err) { /* ignore */ }
+        return;
+      }
+      try {
+        const bodyText = $('body').text().toLowerCase();
+        const matched = keywords.filter((kw) => bodyText.includes(kw));
+        if (matched.length > 0) discovered.set(request.url, { url: request.url, html: $.html() });
+        await enqueueLinks({
+          transformRequestFunction(req) {
+            try {
+              const links = $('a[href]').toArray();
+              for (const el of links) {
+                const href = $(el).attr('href') || '';
+                try {
+                  const fullHref = new URL(href, request.url).href;
+                  if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req;
+                } catch { /* invalid href */ }
+              }
+            } catch { /* ignore */ }
+            return null;
+          },
+        });
+      } catch (err) {
+        const bodyText = String(response?.body || '');
+        if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
+      }
+    },
+  });
+  await crawler.run(startUrls);
+  return [...discovered.values()];
+}
+
+// ============================================================
+// STAGE 2 – SCRAPER: kumpulkan respons mentah dari setiap path
+// ============================================================
+async function scrapeEndpoints(base, candidates, timeout) {
+  const scraped = [];
+  const queue = [...candidates];
+  async function worker() {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+      const path   = normalizePath(item.path);
+      const method = String(item.method || 'GET').toUpperCase();
+      const url    = `https://${base}${path}`;
+      const start  = Date.now();
+      try {
+        const response = await got(url, {
+          method,
+          timeout: { request: timeout },
+          throwHttpErrors: false,
+          retry: { limit: 0 },
+          headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
+        });
+        scraped.push({
+          candidate: item,
+          statusCode: response.statusCode,
+          body: response.body,
+          responseTime: Date.now() - start,
+          error: null,
+        });
+      } catch (err) {
+        scraped.push({
+          candidate: item,
+          statusCode: 0,
+          body: '',
+          responseTime: Date.now() - start,
+          error: err.message,
+        });
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: DEFAULT_CONCURRENCY }, () => worker()));
+  console.log(`[SCRAPER] ${scraped.length} endpoints scraped`);
+  return scraped;
+}
+
+// ============================================================
+// STAGE 3 – SCANNER: baca respons, catat status & hash
+// ============================================================
+function scanResponses(scraped) {
+  return scraped.map(({ candidate, statusCode, body, responseTime, error }) => {
+    const bodyHash = body ? sha256(body) : '';
+    return {
+      candidate,
+      statusCode,
+      body,
+      bodyHash,
+      responseTime,
+      errorMessage: error || '',
+    };
+  });
+}
+
+// ============================================================
+// STAGE 4 – PARSER: semua logika ekstraksi dijalankan DI AKHIR
+// ============================================================
+
+// --- 4a. Ultimate Price Extractor ---
 function extractPrice(pricing) {
   if (!pricing) return '';
   const raw = String(pricing).trim();
@@ -135,9 +300,7 @@ function extractPrice(pricing) {
   return '';
 }
 
-// ============================================================
-// Precision Parsers
-// ============================================================
+// --- 4b. Precision Parsers (hanya dipakai di akhir) ---
 function parseWellKnownX402(text) {
   const candidates = [];
   try {
@@ -196,50 +359,34 @@ function parseAgentCard(text) {
   const candidates = [];
   try {
     const data = JSON.parse(text);
-
-    // Daftar super lengkap dari semua kunci yang mungkin digunakan
     const possibleServiceKeys = [
       'skills', 'services', 'endpoints', 'actions', 'capabilities',
       'tools', 'functions', 'methods', 'apis', 'resources',
-      'offers', 'listings', 'items', 'entries'
+      'offers', 'listings', 'items', 'entries',
     ];
-
-    // 1. Cek semua kunci yang mungkin
     for (const key of possibleServiceKeys) {
       if (data[key] && Array.isArray(data[key])) {
         for (const item of data[key]) {
-          if (typeof item === 'object') {
-            candidates.push(extractEndpointFromObject(item));
-          }
+          if (typeof item === 'object') candidates.push(extractEndpointFromObject(item));
         }
       }
     }
-
-    // 2. Jika tidak ada yang cocok, lakukan deep scan ke seluruh objek
     if (candidates.length === 0) {
       function deepScan(obj) {
         if (!obj || typeof obj !== 'object') return;
         if (Array.isArray(obj)) {
-          obj.forEach(item => {
-            if (typeof item === 'object') candidates.push(extractEndpointFromObject(item));
-          });
+          obj.forEach(item => { if (typeof item === 'object') candidates.push(extractEndpointFromObject(item)); });
           return;
         }
-        // Cek apakah objek ini sendiri adalah endpoint
-        if (obj.path || obj.endpoint || obj.url) {
-          candidates.push(extractEndpointFromObject(obj));
-        }
-        // Lanjutkan ke dalam
+        if (obj.path || obj.endpoint || obj.url) candidates.push(extractEndpointFromObject(obj));
         Object.values(obj).forEach(val => deepScan(val));
       }
       deepScan(data);
     }
-
   } catch { /* not JSON */ }
   return candidates;
 }
 
-// Fungsi bantuan untuk mengekstrak endpoint dari objek
 function extractEndpointFromObject(obj) {
   return normalizeCandidate({
     path:        obj.path || obj.endpoint || obj.url || obj.route || '',
@@ -329,9 +476,44 @@ function parseHealth(text) {
   return candidates;
 }
 
-// ============================================================
-// Universal Extractor
-// ============================================================
+function parseLLMsTxt(text, sourceLabel) {
+  const candidates = [];
+  const raw = String(text || '');
+  const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
+  let match;
+  while ((match = llmsAltPattern.exec(raw)) !== null) {
+    candidates.push(normalizeCandidate({
+      path: normalizePath('/tools/' + match[1].trim().toLowerCase().replace(/\s+/g, '_')),
+      method: 'GET',
+      rawPrice: String(Math.round(parseFloat(match[2]) * 1_000_000)),
+      label: match[1].trim(),
+      description: match[3].trim(),
+      source: `llms.txt:${sourceLabel}`,
+    }));
+  }
+  return candidates;
+}
+
+function parseJSONLike(text, sourceLabel) {
+  const candidates = [];
+  try {
+    const data = JSON.parse(text);
+    if (data.path || data.endpoint || data.url) candidates.push(extractEndpointFromObject(data));
+    if (Array.isArray(data)) {
+      for (const item of data) {
+        if (typeof item === 'object') candidates.push(extractEndpointFromObject(item));
+      }
+    }
+    if (typeof data === 'object' && data !== null) {
+      for (const val of Object.values(data)) {
+        if (val && typeof val === 'object' && (val.path || val.endpoint || val.url)) candidates.push(extractEndpointFromObject(val));
+      }
+    }
+  } catch { /* not JSON */ }
+  return candidates;
+}
+
+// --- 4c. Universal Extractor (tetap seperti asli) ---
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
@@ -422,9 +604,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
   return candidates;
 }
 
-// ============================================================
-// Smart Router
-// ============================================================
+// --- 4d. Smart Router (tetap seperti asli) ---
 function smartRouter(candidates, sourceLabel) {
   const cleaned = [];
   for (const candidate of candidates) {
@@ -444,204 +624,89 @@ function smartRouter(candidates, sourceLabel) {
 }
 
 // ============================================================
-// Crawler: kumpulkan path dari semua sumber
+// FINAL PARSER: gabungkan semua hasil parsing
 // ============================================================
-async function fetchTextSource(url, timeout, label) {
-  try {
-    const response = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
-    if (response.statusCode === 200 && response.body) { console.log(`[FETCH] ${label}: ${response.body.length} bytes`); return response.body; }
-  } catch (err) { console.log(`[FETCH] ${label} error: ${err.message}`); }
-  return null;
-}
+function parseAllRawData(rawPaths, scrapedData) {
+  const candidates = [];
 
-async function crawlHTMLPages(base, timeout) {
-  const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
-  const discovered = new Map();
-  const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
-  const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 20,
-    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
-    async requestHandler({ request, response, $, enqueueLinks }) {
-      const contentType = response?.headers?.['content-type'] || '';
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-        try {
-          const bodyText = String(response?.body || '');
-          if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
-        } catch (err) { /* ignore */ }
-        return;
-      }
-      try {
-        const bodyText = $('body').text().toLowerCase();
-        const matched = keywords.filter((kw) => bodyText.includes(kw));
-        if (matched.length > 0) discovered.set(request.url, { url: request.url, html: $.html() });
-        await enqueueLinks({ transformRequestFunction(req) { try { const links = $('a[href]').toArray(); for (const el of links) { const href = $(el).attr('href') || ''; try { const fullHref = new URL(href, request.url).href; if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req; } catch { /* invalid href */ } } } catch { /* ignore */ } return null; } });
-      } catch (err) {
-        const bodyText = String(response?.body || '');
-        if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
-      }
-    },
-  });
-  await crawler.run(startUrls);
-  return [...discovered.values()];
-}
+  // 1. Parse raw API sources dengan parser spesifik
+  for (const { source, content } of rawPaths) {
+    let parsed = [];
+    if (source === 'well-known-x402') parsed = parseWellKnownX402(content);
+    else if (source.startsWith('agent-')) parsed = parseAgentCard(content);
+    else if (source === 'openapi' || source === 'swagger') parsed = parseOpenAPI(content);
+    else if (source === 'health') parsed = parseHealth(content);
+    else if (source === 'llms.txt') parsed = parseLLMsTxt(content, source);
+    else if (source === 'mcp.json' || source === 'api-docs') parsed = parseJSONLike(content, source);
 
-async function collectAllPaths(base, timeout) {
-  const allCandidates = [];
-
-  // Sumber API standar → precision parsers
-  const apiSources = [
-    { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402', parser: parseWellKnownX402 },
-    { url: `https://${base}/.well-known/agent-card.json`,           label: 'agent-card',      parser: parseAgentCard },
-    { url: `https://${base}/.well-known/agent.json`,                label: 'agent.json',      parser: parseAgentCard },
-    { url: `https://${base}/.well-known/agent-services.json`,       label: 'agent-services',  parser: parseAgentCard },
-    { url: `https://${base}/openapi.json`,                          label: 'openapi',         parser: parseOpenAPI },
-    { url: `https://${base}/swagger.json`,                          label: 'swagger',         parser: parseOpenAPI },
-    { url: `https://${base}/health`,                                label: 'health',          parser: parseHealth },
-  ];
-  for (const src of apiSources) {
-    const text = await fetchTextSource(src.url, timeout, src.label);
-    if (!text) continue;
-    const candidates = src.parser(text);
-    const cleaned = smartRouter(candidates, src.label);
-    console.log(`[CRAWLER] ${src.label}: ${candidates.length} raw → ${cleaned.length} cleaned`);
-    allCandidates.push(...cleaned);
-  }
-
-  // llms.txt, mcp.json, api-docs → universal parser
-  const textSources = [
-    { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
-    { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
-    { url: `https://${base}/api-docs.json`, label: 'api-docs' },
-  ];
-  for (const src of textSources) {
-    const text = await fetchTextSource(src.url, timeout, src.label);
-    if (!text) continue;
-    const candidates = universalExtract(text, src.label);
-    const cleaned = smartRouter(candidates, src.label);
-    console.log(`[CRAWLER] ${src.label}: ${candidates.length} raw → ${cleaned.length} cleaned`);
-    allCandidates.push(...cleaned);
-  }
-
-  // Halaman HTML → universal parser
-  const htmlPages = await crawlHTMLPages(base, timeout);
-  for (const page of htmlPages) {
-    const candidates = universalExtract(page.html, 'scraper');
-    const cleaned = smartRouter(candidates, 'scraper');
-    console.log(`[CRAWLER] scraper:${page.url}: ${candidates.length} raw → ${cleaned.length} cleaned`);
-    allCandidates.push(...cleaned);
-  }
-
-  return uniqCandidates(allCandidates).filter(isValidCandidate);
-}
-
-// ============================================================
-// Verifier: panggil setiap path, catat semua respons
-// ============================================================
-async function verifyEndpoints(base, candidates, timeout) {
-  const verified = [];
-  const queue = [...candidates];
-  async function worker() {
-    while (queue.length > 0) {
-      const item = queue.shift();
-      if (!item) continue;
-      const path   = normalizePath(item.path);
-      const method = String(item.method || 'GET').toUpperCase();
-      const url    = `https://${base}${path}`;
-      const start  = Date.now();
-      try {
-        const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
-        verified.push({
-          candidate: item,
-          statusCode: response.statusCode,
-          body: response.body,
-          responseTime: Date.now() - start,
-          error: null,
-        });
-      } catch (err) {
-        verified.push({
-          candidate: item,
-          statusCode: 0,
-          body: '',
-          responseTime: Date.now() - start,
-          error: err.message,
-        });
-      }
+    if (parsed.length === 0) {
+      // Fallback ke universalExtract jika parser spesifik tidak menghasilkan apa-apa
+      parsed = universalExtract(content, source);
     }
+    const cleaned = smartRouter(parsed, source);
+    console.log(`[PARSER] ${source}: ${parsed.length} raw → ${cleaned.length} cleaned`);
+    candidates.push(...cleaned);
   }
-  await Promise.all(Array.from({ length: DEFAULT_CONCURRENCY }, () => worker()));
-  console.log(`[VERIFIER] ${verified.length} endpoints checked`);
-  return verified;
+
+  // 2. Parse body respons dari scraper
+  for (const item of scrapedData) {
+    if (!item.body) continue;
+    const { candidate, body, statusCode } = item;
+    const path = normalizePath(candidate.path);
+
+    // Coba 402 JSON
+    if (statusCode === 402) {
+      try {
+        const json = JSON.parse(body);
+        if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
+          const offer = json.accepts[0];
+          candidates.push(normalizeCandidate({
+            path,
+            method: candidate.method || 'GET',
+            rawPrice: extractPrice(offer.maxAmountRequired || offer.amount || ''),
+            network: offer.network || candidate.network || '',
+            asset: offer.asset || candidate.asset || '',
+            payTo: offer.payTo || candidate.payTo || '',
+            label: offer.label || candidate.label || '',
+            description: offer.description || candidate.description || '',
+            source: 'scraper:402',
+          }));
+          continue;
+        }
+      } catch { /* not JSON */ }
+    }
+
+    // Fallback: universalExtract pada body
+    const extracted = universalExtract(body, `scraper:${path}`);
+    const cleaned = smartRouter(extracted, 'scraper');
+    if (cleaned.length > 0) candidates.push(...cleaned);
+  }
+
+  return uniqCandidates(candidates).filter(isValidCandidate);
 }
 
 // ============================================================
-// Scanner: baca konten respons, cari informasi x402
+// FINAL FILTER: hanya endpoint lengkap yang lolos
 // ============================================================
-function scanResponse(verifiedItem, base) {
-  const { candidate, statusCode, body, responseTime, error } = verifiedItem;
-  const path = normalizePath(candidate.path);
-  const bodyHash = body ? sha256(body) : '';
-
-  // Inisialisasi dengan data dari kandidat
-  let price = candidate.rawPrice || '';
-  let network = candidate.network || '';
-  let asset = candidate.asset || '';
-  let payTo = candidate.payTo || '';
-  let label = candidate.label || '';
-  let description = candidate.description || '';
-
-  // Coba parsing body sebagai JSON 402
-  if (statusCode === 402 && body) {
-    try {
-      const json = JSON.parse(body);
-      if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
-        const offer = json.accepts[0];
-        price = price || String(offer.maxAmountRequired || offer.amount || '');
-        network = network || offer.network || '';
-        asset = asset || offer.asset || '';
-        payTo = payTo || offer.payTo || '';
-        label = label || offer.label || '';
-        description = description || offer.description || '';
-      }
-    } catch { /* not JSON */ }
-  }
-
-  // Kalau masih kosong, coba universalExtract pada body
-  if (!price && body) {
-    const extracted = universalExtract(body, `verify:${path}`);
-    if (extracted.length > 0) {
-      const best = extracted.find(e => e.rawPrice && e.path === path) || extracted[0];
-      price = price || best.rawPrice || '';
-      label = label || best.label || '';
-      description = description || best.description || '';
-    }
-  }
-
-  return {
-    domain: base,
-    path,
-    status: statusCode === 402 ? 'success' : (error ? classifyError(error) : 'public_info'),
+function finalFilter(parsedCandidates) {
+  return parsedCandidates.map(c => ({
+    domain: '',
+    path: c.path,
+    status: 'public_info',
     x402Version: '',
-    price,
-    priceReadable: price ? `$${(parseInt(price, 10) / 1_000_000).toFixed(6)}` : '',
-    network,
-    asset,
-    payTo,
-    label,
-    description,
-    httpStatus: String(statusCode),
-    responseTimeMs: String(responseTime),
-    errorMessage: error || '',
+    price: c.rawPrice || '',
+    priceReadable: c.rawPrice ? `$${(parseInt(c.rawPrice, 10) / 1_000_000).toFixed(6)}` : '',
+    network: c.network || '',
+    asset: c.asset || '',
+    payTo: c.payTo || '',
+    label: c.label || '',
+    description: c.description || '',
+    httpStatus: '',
+    responseTimeMs: '',
+    errorMessage: '',
     timestamp: new Date().toISOString(),
-    auditHash: bodyHash,
-  };
-}
-
-// ============================================================
-// Scraper + Parser: pastikan data lengkap sebelum masuk datasheet
-// ============================================================
-function finalFilter(scanned) {
-  // Hanya endpoint yang punya harga DAN deskripsi DAN label yang lolos
-  return scanned.filter(row => {
+    auditHash: '',
+  })).filter(row => {
     const hasPrice = row.price && row.price !== '0';
     const hasDescription = row.description && row.description.length > 5;
     const hasLabel = row.label && row.label.length > 2;
@@ -712,34 +777,66 @@ const allResults = [];
 const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
 
 for (const base of targetDomains) {
-  console.log(`[SDS] === Pipeline for ${base} ===`);
+  console.log(`\n[SDS] === Pipeline for ${base} ===\n`);
 
-  // 1. CRAWLER
-  let candidates = manualList.length > 0
-    ? manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }))
-    : await collectAllPaths(base, timeout);
+  // ============================================================
+  // STAGE 1 – CRAWLER: kumpulkan SEMUA path mentah
+  // ============================================================
+  let rawPaths = [];
+  if (manualList.length > 0) {
+    console.log('[CRAWLER] Manual path list provided, skipping source discovery.');
+    rawPaths = []; // manual path tidak butuh API source crawling
+  } else {
+    rawPaths = await crawlAPISources(base, timeout);
+  }
+  const htmlPages = manualList.length > 0 ? [] : await crawlHTMLPages(base, timeout);
+  console.log(`[CRAWLER] ${rawPaths.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  if (candidates.length === 0) {
-    console.log('[SDS] Crawler returned 0. Falling back to dictionary.');
+  // Gabungkan semua konten mentah: API sources + HTML pages
+  const allRawContent = [
+    ...rawPaths,
+    ...htmlPages.map(p => ({ source: 'scraper', content: p.html })),
+  ];
+
+  // ============================================================
+  // STAGE 2 – SCRAPER: panggil setiap path, ambil respons mentah
+  // ============================================================
+  let candidates;
+  if (manualList.length > 0) {
+    candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
+  } else {
+    // Gunakan dictionary dulu kalau tidak ada manual list, untuk dikirim ke scraper
     candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
   }
-  console.log(`[CRAWLER] Total candidates: ${candidates.length}`);
+  console.log(`[SCRAPER] ${candidates.length} paths to scrape`);
 
-  // 2. VERIFIER
-  const verified = await verifyEndpoints(base, candidates, timeout);
+  const scrapedData = await scrapeEndpoints(base, candidates, timeout);
 
-  // 3. SCANNER
-  const scanned = verified.map(v => scanResponse(v, base));
+  // ============================================================
+  // STAGE 3 – SCANNER: baca respons, catat status & hash
+  // ============================================================
+  const scannedData = scanResponses(scrapedData);
+  console.log(`[SCANNER] ${scannedData.length} responses scanned`);
 
-  // 4. SCRAPER + PARSER (final filter: harus punya harga, deskripsi, label)
-  const final = finalFilter(scanned);
-  console.log(`[SCRAPER] After final filter: ${final.length} complete endpoints`);
+  // ============================================================
+  // STAGE 4 – PARSER: semua parsing dijalankan DI AKHIR
+  // ============================================================
+  const parsedCandidates = parseAllRawData(allRawContent, scannedData);
+  console.log(`[PARSER] ${parsedCandidates.length} total candidates after parsing`);
+
+  // ============================================================
+  // STAGE 5 – FINAL FILTER
+  // ============================================================
+  const final = finalFilter(parsedCandidates);
+  console.log(`[FINAL] ${final.length} complete endpoints after final filter`);
 
   allResults.push(...final);
 }
 
-// 5. DATASHEET
-const finalResults = allResults.map(row => ({ ...row, download_docx: '', download_pdf: '' }));
+// ============================================================
+// OUTPUT
+// ============================================================
+const finalResults = allResults.map(row => ({ ...row, domain, download_docx: '', download_pdf: '' }));
 const docxBuffer = await generateDOCX(domain, finalResults);
 const pdfBuffer  = await generatePDF(domain, finalResults);
 const docxUrl    = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -747,5 +844,5 @@ const pdfUrl     = await saveFileToKVS('OUTPUT.pdf',  pdfBuffer,  'application/p
 const output     = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
 
 await Actor.pushData(output);
-console.log(`Scan complete. ${output.length} endpoints found.`);
+console.log(`\nScan complete. ${output.length} endpoints found.`);
 await Actor.exit();
