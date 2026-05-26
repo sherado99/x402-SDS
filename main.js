@@ -74,7 +74,6 @@ function isValidCandidate(candidate) {
     /\/static\//i, /\/chunks\//i, /\/media\//i,
     /\/favicon/i, /\/logo/i, /\/merit-logo/i,
     /\/llms\.txt/i, /\/docs\/?$/i,
-    /\/v1\/x402\/?$/i, /\/v2\/x402\/?$/i, /\/\.well-known\/x402\/?$/i,
   ];
   if (noisePatterns.some(p => p.test(candidate.path))) return false;
   if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
@@ -112,74 +111,32 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// ULTIMATE PRICE EXTRACTOR (semua kemungkinan)
+// Ultimate Price Extractor
 // ============================================================
 function extractPrice(pricing) {
   if (!pricing) return '';
   const raw = String(pricing).trim();
   if (!raw) return '';
-
-  // Array of regex patterns — dari yang paling spesifik ke paling umum
   const patterns = [
-    // "US$0.01", "US$ 0.01"
     /US\$\s*([\d.]+)/i,
-    // "$0.01 USD", "$0.01 USDC"
     /\$\s*([\d.]+)\s*(?:USD|USDC|usd|usdc)/i,
-    // "0.01 USDC", "0.01 USD"
     /([\d.]+)\s*(?:USDC|USD|usd|usdc)/i,
-    // "$0.01"
     /\$\s*([\d.]+)/,
-    // "Price: 0.01"
     /Price:\s*([\d.]+)/i,
-    // "0.01 per request"
     /([\d.]+)\s*per\s+request/i,
-    // Plain number if it's the only thing (fallback)
     /^([\d.]+)$/,
   ];
-
   for (const pattern of patterns) {
     const match = raw.match(pattern);
-    if (match) {
-      const price = String(Math.round(parseFloat(match[1]) * 1_000_000));
-      console.log(`[PRICE-EXTRACT] Pattern matched: "${raw}" → ${price} atomic units`);
-      return price;
-    }
+    if (match) return String(Math.round(parseFloat(match[1]) * 1_000_000));
   }
-
-  // Jika pricing adalah number murni
   if (typeof pricing === 'number') return String(Math.round(pricing * 1_000_000));
   if (typeof pricing === 'string' && !isNaN(parseFloat(pricing))) return String(Math.round(parseFloat(pricing) * 1_000_000));
-
   return '';
 }
 
 // ============================================================
-// SMART ROUTER – Membersihkan artefak dan menyaring sampah
-// ============================================================
-function smartRouter(candidates, sourceLabel) {
-  const cleaned = [];
-  for (const candidate of candidates) {
-    let cleanPath = candidate.path.replace(/[`\\\n\r<>]/g, '').trim();
-    if (!cleanPath.startsWith('/') || cleanPath.length < 2) continue;
-    if (cleanPath.includes('<') || cleanPath.includes('>')) continue;
-    if (candidate.label && (candidate.label.includes('<html') || candidate.label.includes('<pre>') || candidate.label.includes('<code>'))) continue;
-
-    let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
-    if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
-    let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
-
-    // Untuk sumber universal, tolak jika tidak ada harga
-    if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
-      if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
-    }
-
-    cleaned.push({ ...candidate, path: cleanPath, label: cleanLabel, description: cleanDesc });
-  }
-  return cleaned;
-}
-
-// ============================================================
-// PARSER PRESISI UNTUK SUMBER API STANDAR
+// Precision Parsers
 // ============================================================
 function parseWellKnownX402(text) {
   const candidates = [];
@@ -333,12 +290,11 @@ function parseHealth(text) {
 }
 
 // ============================================================
-// PARSER UNIVERSAL UNTUK HTML / TEKS (PASUKAN GERILYA)
+// Universal Extractor
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
-
   const tablePrices = new Map();
   const tableRegex = /\|\s*([A-Za-z][\w\s/-]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
   let tm;
@@ -427,46 +383,28 @@ function universalExtract(text, sourceLabel = 'unknown') {
 }
 
 // ============================================================
-// CRAWLER (LANGKAH 1) – Kumpulkan halaman
+// Smart Router
 // ============================================================
-async function crawlPages(base, timeout) {
-  const startUrls = [
-    `https://${base}`, `https://${base}/docs`, `https://${base}/api`,
-    `https://${base}/developers`, `https://${base}/pricing`,
-  ];
-  const discovered = new Map();
-  const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
-
-  const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 20,
-    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
-    async requestHandler({ request, response, $, enqueueLinks }) {
-      const contentType = response?.headers?.['content-type'] || '';
-      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
-        try {
-          const bodyText = String(response?.body || '');
-          if (bodyText && bodyText.length > 10) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[CRAWLER] Non-HTML page saved: ${request.url}`); }
-        } catch (err) { console.log(`[CRAWLER] Error saving non-HTML: ${err.message}`); }
-        return;
-      }
-      try {
-        const bodyText = $('body').text().toLowerCase();
-        const matched = keywords.filter((kw) => bodyText.includes(kw));
-        if (matched.length > 0) { discovered.set(request.url, { url: request.url, html: $.html() }); console.log(`[CRAWLER] Found: ${request.url}`); }
-        await enqueueLinks({ transformRequestFunction(req) { try { const links = $('a[href]').toArray(); for (const el of links) { const href = $(el).attr('href') || ''; try { const fullHref = new URL(href, request.url).href; if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req; } catch { /* invalid href */ } } } catch { /* ignore */ } return null; } });
-      } catch (err) {
-        console.log(`[CRAWLER] Cheerio failed for ${request.url}: ${err.message}`);
-        const bodyText = String(response?.body || '');
-        if (bodyText && bodyText.length > 10) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[CRAWLER] Saved raw body: ${request.url}`); }
-      }
-    },
-  });
-  await crawler.run(startUrls);
-  return [...discovered.values()];
+function smartRouter(candidates, sourceLabel) {
+  const cleaned = [];
+  for (const candidate of candidates) {
+    let cleanPath = candidate.path.replace(/[`\\\n\r<>]/g, '').trim();
+    if (!cleanPath.startsWith('/') || cleanPath.length < 2) continue;
+    if (cleanPath.includes('<') || cleanPath.includes('>')) continue;
+    if (candidate.label && (candidate.label.includes('<html') || candidate.label.includes('<pre>') || candidate.label.includes('<code>'))) continue;
+    let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
+    if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
+    let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
+    if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
+      if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
+    }
+    cleaned.push({ ...candidate, path: cleanPath, label: cleanLabel, description: cleanDesc });
+  }
+  return cleaned;
 }
 
 // ============================================================
-// FETCHER UNTUK SUMBER API STANDAR
+// Crawler: kumpulkan path dari semua sumber
 // ============================================================
 async function fetchTextSource(url, timeout, label) {
   try {
@@ -476,25 +414,42 @@ async function fetchTextSource(url, timeout, label) {
   return null;
 }
 
-// ============================================================
-// PIPELINE UTAMA (ALUR BENAR)
-// ============================================================
-async function runFullPipeline(base, timeout) {
+async function crawlHTMLPages(base, timeout) {
+  const startUrls = [`https://${base}`, `https://${base}/docs`, `https://${base}/api`, `https://${base}/developers`, `https://${base}/pricing`];
+  const discovered = new Map();
+  const keywords = ['x402', 'agent', 'payment', 'endpoint', 'pricing', 'service', '/api/', 'usdc', '$0.', 'method', 'price', 'post /', 'get /', 'base url', 'api reference', 'pricing summary'];
+  const crawler = new CheerioCrawler({
+    maxRequestsPerCrawl: 20,
+    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
+    async requestHandler({ request, response, $, enqueueLinks }) {
+      const contentType = response?.headers?.['content-type'] || '';
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
+        try {
+          const bodyText = String(response?.body || '');
+          if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
+        } catch (err) { /* ignore */ }
+        return;
+      }
+      try {
+        const bodyText = $('body').text().toLowerCase();
+        const matched = keywords.filter((kw) => bodyText.includes(kw));
+        if (matched.length > 0) discovered.set(request.url, { url: request.url, html: $.html() });
+        await enqueueLinks({ transformRequestFunction(req) { try { const links = $('a[href]').toArray(); for (const el of links) { const href = $(el).attr('href') || ''; try { const fullHref = new URL(href, request.url).href; if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req; } catch { /* invalid href */ } } } catch { /* ignore */ } return null; } });
+      } catch (err) {
+        const bodyText = String(response?.body || '');
+        if (bodyText && bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
+      }
+    },
+  });
+  await crawler.run(startUrls);
+  return [...discovered.values()];
+}
+
+async function collectAllPaths(base, timeout) {
   const allCandidates = [];
 
-  // FASE 1: KERAHKAN PASUKAN GERILYA (Crawler + Universal Parser)
-  console.log('[PIPELINE] Phase 1: Deploying guerrilla forces (Crawler + Universal Parser)...');
-  const scraperPages = await crawlPages(base, timeout);
-  for (const page of scraperPages) {
-    const rawCandidates = universalExtract(page.html, 'scraper');
-    const cleaned = smartRouter(rawCandidates, 'scraper');
-    console.log(`[PIPELINE] scraper:${page.url}: ${rawCandidates.length} raw → ${cleaned.length} cleaned`);
-    allCandidates.push(...cleaned);
-  }
-
-  // FASE 2: KERAHKAN PASUKAN PRESISI (Precision Parsers)
-  console.log('[PIPELINE] Phase 2: Deploying precision forces (Precision Parsers)...');
-  const precisionSources = [
+  // Sumber API standar → precision parsers
+  const apiSources = [
     { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402', parser: parseWellKnownX402 },
     { url: `https://${base}/.well-known/agent-card.json`,           label: 'agent-card',      parser: parseAgentCard },
     { url: `https://${base}/.well-known/agent.json`,                label: 'agent.json',      parser: parseAgentCard },
@@ -503,73 +458,166 @@ async function runFullPipeline(base, timeout) {
     { url: `https://${base}/swagger.json`,                          label: 'swagger',         parser: parseOpenAPI },
     { url: `https://${base}/health`,                                label: 'health',          parser: parseHealth },
   ];
-
-  for (const src of precisionSources) {
+  for (const src of apiSources) {
     const text = await fetchTextSource(src.url, timeout, src.label);
     if (!text) continue;
-    const rawCandidates = src.parser(text);
-    const cleaned = smartRouter(rawCandidates, src.label);
-    console.log(`[PIPELINE] ${src.label}: ${rawCandidates.length} raw → ${cleaned.length} cleaned`);
+    const candidates = src.parser(text);
+    const cleaned = smartRouter(candidates, src.label);
+    console.log(`[CRAWLER] ${src.label}: ${candidates.length} raw → ${cleaned.length} cleaned`);
     allCandidates.push(...cleaned);
   }
 
-  // FASE 3: TAMBAHAN (llms.txt, mcp.json, api-docs → Universal Parser)
-  console.log('[PIPELINE] Phase 3: Additional sources (llms.txt, mcp.json)...');
-  const extraSources = [
+  // llms.txt, mcp.json, api-docs → universal parser
+  const textSources = [
     { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
     { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
     { url: `https://${base}/api-docs.json`, label: 'api-docs' },
   ];
-  for (const src of extraSources) {
+  for (const src of textSources) {
     const text = await fetchTextSource(src.url, timeout, src.label);
     if (!text) continue;
-    const rawCandidates = universalExtract(text, src.label);
-    const cleaned = smartRouter(rawCandidates, src.label);
-    console.log(`[PIPELINE] ${src.label}: ${rawCandidates.length} raw → ${cleaned.length} cleaned`);
+    const candidates = universalExtract(text, src.label);
+    const cleaned = smartRouter(candidates, src.label);
+    console.log(`[CRAWLER] ${src.label}: ${candidates.length} raw → ${cleaned.length} cleaned`);
     allCandidates.push(...cleaned);
   }
 
-  return uniqCandidates(allCandidates);
+  // Halaman HTML → universal parser
+  const htmlPages = await crawlHTMLPages(base, timeout);
+  for (const page of htmlPages) {
+    const candidates = universalExtract(page.html, 'scraper');
+    const cleaned = smartRouter(candidates, 'scraper');
+    console.log(`[CRAWLER] scraper:${page.url}: ${candidates.length} raw → ${cleaned.length} cleaned`);
+    allCandidates.push(...cleaned);
+  }
+
+  return uniqCandidates(allCandidates).filter(isValidCandidate);
 }
 
 // ============================================================
-// VERIFIER – Verifikasi endpoint
+// Verifier: panggil setiap path, catat semua respons
 // ============================================================
-async function checkEndpoint(base, candidate, timeout) {
-  const path   = normalizePath(candidate.path);
-  const method = String(candidate.method || 'GET').toUpperCase();
-  const url    = `https://${base}${path}`;
-  const start  = Date.now();
-
-  try {
-    const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
-    const httpStatus = response.statusCode; const responseTime = Date.now() - start; const bodyHash = sha256(response.body);
-
-    if (httpStatus === 402) {
+async function verifyEndpoints(base, candidates, timeout) {
+  const verified = [];
+  const queue = [...candidates];
+  async function worker() {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (!item) continue;
+      const path   = normalizePath(item.path);
+      const method = String(item.method || 'GET').toUpperCase();
+      const url    = `https://${base}${path}`;
+      const start  = Date.now();
       try {
-        const responseBody = JSON.parse(response.body);
-        if (responseBody.accepts && Array.isArray(responseBody.accepts) && responseBody.accepts.length > 0) {
-          const offer = responseBody.accepts[0];
-          const rawAmount = String(offer.maxAmountRequired || offer.amount || candidate.rawPrice || '');
-          const priceReadable = rawAmount ? `$${(parseInt(rawAmount, 10) / 1_000_000).toFixed(6)}` : '';
-          return { domain: base, path, status: 'success', x402Version: String(responseBody.x402Version || ''), price: rawAmount, priceReadable, network: offer.network || candidate.network || '', asset: offer.asset || candidate.asset || '', payTo: offer.payTo || candidate.payTo || '', label: offer.label || candidate.label || '', description: offer.description || candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
-        }
-      } catch { /* fall through */ }
+        const response = await got(url, { method, timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
+        verified.push({
+          candidate: item,
+          statusCode: response.statusCode,
+          body: response.body,
+          responseTime: Date.now() - start,
+          error: null,
+        });
+      } catch (err) {
+        verified.push({
+          candidate: item,
+          statusCode: 0,
+          body: '',
+          responseTime: Date.now() - start,
+          error: err.message,
+        });
+      }
     }
-
-    const rawPrice = candidate.rawPrice || '';
-    const priceReadable = rawPrice ? `$${(parseInt(rawPrice, 10) / 1_000_000).toFixed(6)}` : '';
-    return { domain: base, path, status: 'public_info', x402Version: '', price: rawPrice, priceReadable, network: candidate.network || '', asset: candidate.asset || '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: String(httpStatus), responseTimeMs: String(responseTime), errorMessage: '', timestamp: new Date().toISOString(), auditHash: bodyHash };
-  } catch (err) {
-    return { domain: base, path, status: classifyError(err.message), x402Version: '', price: '', priceReadable: '', network: candidate.network || '', asset: candidate.asset || '', payTo: candidate.payTo || '', label: candidate.label || '', description: candidate.description || '', httpStatus: '0', responseTimeMs: String(Date.now() - start), errorMessage: err.message, timestamp: new Date().toISOString(), auditHash: '' };
   }
+  await Promise.all(Array.from({ length: DEFAULT_CONCURRENCY }, () => worker()));
+  console.log(`[VERIFIER] ${verified.length} endpoints checked`);
+  return verified;
+}
+
+// ============================================================
+// Scanner: baca konten respons, cari informasi x402
+// ============================================================
+function scanResponse(verifiedItem, base) {
+  const { candidate, statusCode, body, responseTime, error } = verifiedItem;
+  const path = normalizePath(candidate.path);
+  const bodyHash = body ? sha256(body) : '';
+
+  // Inisialisasi dengan data dari kandidat
+  let price = candidate.rawPrice || '';
+  let network = candidate.network || '';
+  let asset = candidate.asset || '';
+  let payTo = candidate.payTo || '';
+  let label = candidate.label || '';
+  let description = candidate.description || '';
+
+  // Coba parsing body sebagai JSON 402
+  if (statusCode === 402 && body) {
+    try {
+      const json = JSON.parse(body);
+      if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
+        const offer = json.accepts[0];
+        price = price || String(offer.maxAmountRequired || offer.amount || '');
+        network = network || offer.network || '';
+        asset = asset || offer.asset || '';
+        payTo = payTo || offer.payTo || '';
+        label = label || offer.label || '';
+        description = description || offer.description || '';
+      }
+    } catch { /* not JSON */ }
+  }
+
+  // Kalau masih kosong, coba universalExtract pada body
+  if (!price && body) {
+    const extracted = universalExtract(body, `verify:${path}`);
+    if (extracted.length > 0) {
+      const best = extracted.find(e => e.rawPrice && e.path === path) || extracted[0];
+      price = price || best.rawPrice || '';
+      label = label || best.label || '';
+      description = description || best.description || '';
+    }
+  }
+
+  return {
+    domain: base,
+    path,
+    status: statusCode === 402 ? 'success' : (error ? classifyError(error) : 'public_info'),
+    x402Version: '',
+    price,
+    priceReadable: price ? `$${(parseInt(price, 10) / 1_000_000).toFixed(6)}` : '',
+    network,
+    asset,
+    payTo,
+    label,
+    description,
+    httpStatus: String(statusCode),
+    responseTimeMs: String(responseTime),
+    errorMessage: error || '',
+    timestamp: new Date().toISOString(),
+    auditHash: bodyHash,
+  };
+}
+
+// ============================================================
+// Scraper + Parser: pastikan data lengkap sebelum masuk datasheet
+// ============================================================
+function finalFilter(scanned) {
+  // Hanya endpoint yang punya harga DAN deskripsi DAN label yang lolos
+  return scanned.filter(row => {
+    const hasPrice = row.price && row.price !== '0';
+    const hasDescription = row.description && row.description.length > 5;
+    const hasLabel = row.label && row.label.length > 2;
+    return hasPrice && hasDescription && hasLabel;
+  });
 }
 
 // ============================================================
 // Report Generation
 // ============================================================
 async function generateDOCX(domain, results) {
-  const children = [ new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }), new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }), new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }) ];
+  const children = [
+    new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
+    new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
+    new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
+  ];
   if (results.length === 0) children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   else for (const row of results) {
     children.push(new Paragraph({ text: `${row.path} [${row.status}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
@@ -614,51 +662,49 @@ let { domain, paths: manualPaths, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAUL
 if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
 
 domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
-
 const targetDomains = [domain];
 if (includeSubdomains) {
   const lowerDomain = domain.toLowerCase();
   if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) targetDomains.push(`api.${domain}`);
-  else console.log('[SDS] Workers/Fly domain detected. Skipping "api." subdomain addition.');
 }
 
 const allResults = [];
 const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
 
 for (const base of targetDomains) {
-  console.log(`[SDS] Starting pipeline for ${base}`);
+  console.log(`[SDS] === Pipeline for ${base} ===`);
 
-  let candidates = [];
+  // 1. CRAWLER
+  let candidates = manualList.length > 0
+    ? manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }))
+    : await collectAllPaths(base, timeout);
 
-  if (manualList.length > 0) {
-    console.log(`[SDS] Manual paths provided, skipping discovery. Using ${manualList.length} paths.`);
-    candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
-  } else {
-    console.log('[SDS] No manual paths. Running full pipeline.');
-    candidates = await runFullPipeline(base, timeout);
-
-    if (candidates.length === 0) {
-      console.log('[SDS] Pipeline returned 0 candidates. Falling back to dictionary.');
-      candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
-    }
+  if (candidates.length === 0) {
+    console.log('[SDS] Crawler returned 0. Falling back to dictionary.');
+    candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
   }
+  console.log(`[CRAWLER] Total candidates: ${candidates.length}`);
 
-  candidates = candidates.filter(isValidCandidate);
-  candidates = uniqCandidates(candidates);
-  console.log(`[SDS] ${base}: ${candidates.length} candidates to verify`);
+  // 2. VERIFIER
+  const verified = await verifyEndpoints(base, candidates, timeout);
 
-  const queue = [...candidates]; const verified = [];
-  async function worker() { while (queue.length > 0) { const item = queue.shift(); if (!item) continue; verified.push(await checkEndpoint(base, item, timeout)); } }
-  await Promise.all(Array.from({ length: DEFAULT_CONCURRENCY }, () => worker()));
+  // 3. SCANNER
+  const scanned = verified.map(v => scanResponse(v, base));
 
-  for (const row of verified) if (row) allResults.push(row);
+  // 4. SCRAPER + PARSER (final filter: harus punya harga, deskripsi, label)
+  const final = finalFilter(scanned);
+  console.log(`[SCRAPER] After final filter: ${final.length} complete endpoints`);
+
+  allResults.push(...final);
 }
 
+// 5. DATASHEET
 const finalResults = allResults.map(row => ({ ...row, download_docx: '', download_pdf: '' }));
-const docxBuffer = await generateDOCX(domain, finalResults); const pdfBuffer = await generatePDF(domain, finalResults);
-const docxUrl = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-const pdfUrl  = await saveFileToKVS('OUTPUT.pdf', pdfBuffer, 'application/pdf');
-const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
+const docxBuffer = await generateDOCX(domain, finalResults);
+const pdfBuffer  = await generatePDF(domain, finalResults);
+const docxUrl    = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+const pdfUrl     = await saveFileToKVS('OUTPUT.pdf',  pdfBuffer,  'application/pdf');
+const output     = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
 
 await Actor.pushData(output);
 console.log(`Scan complete. ${output.length} endpoints found.`);
