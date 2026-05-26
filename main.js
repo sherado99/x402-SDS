@@ -196,22 +196,62 @@ function parseAgentCard(text) {
   const candidates = [];
   try {
     const data = JSON.parse(text);
-    const services = data.skills || data.services || data.endpoints || [];
-    for (const svc of services) {
-      const path = svc.endpoint || svc.path || svc.url;
-      if (!path) continue;
-      candidates.push(normalizeCandidate({
-        path, method: svc.method || 'GET',
-        rawPrice: extractPrice(svc.price || svc.cost || svc.amount || ''),
-        network: svc.network || '',
-        asset: svc.asset || '',
-        label: svc.name || svc.id || '',
-        description: svc.description || '',
-        source: 'agent-card',
-      }));
+
+    // Daftar super lengkap dari semua kunci yang mungkin digunakan
+    const possibleServiceKeys = [
+      'skills', 'services', 'endpoints', 'actions', 'capabilities',
+      'tools', 'functions', 'methods', 'apis', 'resources',
+      'offers', 'listings', 'items', 'entries'
+    ];
+
+    // 1. Cek semua kunci yang mungkin
+    for (const key of possibleServiceKeys) {
+      if (data[key] && Array.isArray(data[key])) {
+        for (const item of data[key]) {
+          if (typeof item === 'object') {
+            candidates.push(extractEndpointFromObject(item));
+          }
+        }
+      }
     }
+
+    // 2. Jika tidak ada yang cocok, lakukan deep scan ke seluruh objek
+    if (candidates.length === 0) {
+      function deepScan(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) {
+          obj.forEach(item => {
+            if (typeof item === 'object') candidates.push(extractEndpointFromObject(item));
+          });
+          return;
+        }
+        // Cek apakah objek ini sendiri adalah endpoint
+        if (obj.path || obj.endpoint || obj.url) {
+          candidates.push(extractEndpointFromObject(obj));
+        }
+        // Lanjutkan ke dalam
+        Object.values(obj).forEach(val => deepScan(val));
+      }
+      deepScan(data);
+    }
+
   } catch { /* not JSON */ }
   return candidates;
+}
+
+// Fungsi bantuan untuk mengekstrak endpoint dari objek
+function extractEndpointFromObject(obj) {
+  return normalizeCandidate({
+    path:        obj.path || obj.endpoint || obj.url || obj.route || '',
+    method:      obj.method || obj.verb || obj.type || 'GET',
+    rawPrice:    extractPrice(obj.price || obj.cost || obj.amount || obj.pricing || ''),
+    network:     obj.network || obj.chain || '',
+    asset:       obj.asset || obj.token || '',
+    payTo:       obj.payTo || obj.address || obj.wallet || '',
+    label:       obj.label || obj.name || obj.title || obj.id || obj.summary || '',
+    description: obj.description || obj.summary || obj.detail || obj.info || '',
+    source:      'agent-card',
+  });
 }
 
 function parseOpenAPI(text) {
