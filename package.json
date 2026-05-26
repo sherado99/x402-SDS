@@ -7,7 +7,9 @@
     "crawlee": "^3.16.0",
     "got": "^12.0.0",
     "docx": "^8.5.0",
-    "pdfkit": "^0.15.0"
+    "pdfkit": "^0.15.0",
+    "hpagent": "^1.2.0"
+
   },
   "scripts": {
     "start": "node main.js"
