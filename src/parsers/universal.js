@@ -64,60 +64,69 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path: normalizePath('/tools/' + llmsAltMatch.trim().toLowerCase().replace(/\s+/g, '_')), method: 'GET', rawPrice: String(Math.round(parseFloat(llmsAltMatch) * 1_000_000)), network: '', asset: '', payTo: '', label: llmsAltMatch.trim(), description: llmsAltMatch.trim(), source: `universal:llms-alt:${sourceLabel}` });
   }
 
-    // HTML href extraction
-  const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
-  for (const match of htmlPathMatches) {
-    const path = match[1]; // PERBAIKAN: Tambahkan [1]
-    if (!path.startsWith('/')) continue;
-    if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
-    if (path.includes('/_next/') || path.includes('/static/')) continue;
-    const context = raw.substring(Math.max(0, match.index - 200), match.index + 300);
-    const priceMatch = context.match(/\$([\d.]+)/);
-    const price = extractPrice(priceMatch ? priceMatch[0] : ''); // PERBAIKAN: Tambahkan [0]
-    const labelMatch = context.match(/>([^<]{5,50})<\/a>/);
-    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
+      // ============================================================
+  // SMART BLOCK UI & PLAIN TEXT EXTRACTION (UPGRADE)
+  // ============================================================
+  // 1. Ubah HTML menjadi teks murni yang dipisahkan oleh baris baru (seperti tampilan di layar)
+  const cleanRaw = raw.replace(/<[^>]+>/g, '\n').replace(/\n\s*\n/g, '\n').trim();
+  
+  // 2. Pecah teks menjadi "Kartu" berdasarkan kata kunci HTTP Method (GET, POST, dll)
+  let blocks = cleanRaw.split(/(?=\b(?:GET|POST|PUT|DELETE|PATCH)\b\s*\n?\s*\/)/i);
+  
+  // Jika tidak ada HTTP Method, coba pecah berdasarkan path umum (/api/ atau /x402/)
+  if (blocks.length <= 1) {
+    blocks = cleanRaw.split(/(?=\n\s*\/api\/|\n\s*\/x402\/|\n\s*\/v[1-9]\/)/i);
   }
 
-    // Plain text & Block UI extraction
-  const plainMatches = raw.matchAll(/(?:GET|POST|PUT|DELETE|PATCH)\s*\n?\s*(\/[a-zA-Z0-9_/-]+)/gi);
-  for (const match of plainMatches) {
-    const path = match[1];
-    if (!path.startsWith('/')) continue;
+  for (const block of blocks) {
+    const pathMatch = block.match(/(?:GET|POST|PUT|DELETE|PATCH)?\s*\n?\s*(\/[a-zA-Z0-9_/-]+)/i);
+    if (!pathMatch) continue;
     
-    // Ambil teks setelah path ditemukan (sekitar 400 karakter ke depan)
-    const contextAfter = raw.substring(match.index + match[0].length, match.index + 400);
+    const path = pathMatch[1].trim();
+    if (!path.startsWith('/') || path.length < 3) continue;
+    if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
+    if (path.includes('/_next/') || path.includes('/static/')) continue;
+
+    const methodMatch = block.match(/(GET|POST|PUT|DELETE|PATCH)/i);
+    const method = methodMatch ? methodMatch[1].toUpperCase() : 'GET';
+
+    // Batasi blok maksimal 500 karakter agar tidak menabrak kartu berikutnya
+    const context = block.substring(0, 500);
     
-    const priceMatch = contextAfter.match(/\$([\d.]+)/);
+    const priceMatch = context.match(/\$([\d.]+)/);
     const price = extractPrice(priceMatch ? priceMatch[1] : '');
     
-    // Bersihkan HTML tags dan pisahkan berdasarkan baris baru
-    const lines = contextAfter.split('\n').map(l => l.replace(/<[^>]+>/g, '').trim()).filter(Boolean);
-    
+    // Ekstrak deskripsi dan label dari baris-baris di dalam kartu ini
+    const lines = context.split('\n').map(l => l.trim()).filter(Boolean);
     let description = '';
     let label = '';
     
-    // Cari baris yang panjangnya lebih dari 20 huruf sebagai deskripsi
-    for (const line of lines) {
-      if (line.includes('$') || line.length < 4) continue;
-      if (line.length > 25 && !description) {
-        description = line;
-      } else if (!label && line.length >= 4 && line.length <= 25) {
-        label = line;
+    for (let line of lines) {
+      // Lewati baris yang isinya HANYA method, path, atau harga
+      if (line === method || line === path || /^\$[\d.]+$/.test(line)) continue;
+      
+      // Bersihkan baris dari path/harga jika mereka berada di baris yang sama (inline text)
+      let cleanLine = line.replace(path, '').replace(/\$[\d.]+/, '').replace(new RegExp(`^${method}\\s*`, 'i'), '').replace(/^[-—:\s]+/, '').trim();
+      if (cleanLine.length < 4) continue;
+
+      // Baris panjang = Deskripsi
+      if (cleanLine.length > 35 && !description) {
+        description = cleanLine;
+      } 
+      // Baris pendek = Label (Abaikan teks versi seperti "v1", "v2")
+      else if (cleanLine.length >= 4 && cleanLine.length <= 35 && !label && !/^v\d+$/i.test(cleanLine)) {
+        label = cleanLine;
       }
     }
-    
-    // Fallback jika regex lama menangkap format Markdown
-    const fallbackDescMatch = raw.substring(Math.max(0, match.index - 50), match.index + 200).match(/-\s*(.{15,100})$/m);
-    if (!description && fallbackDescMatch) description = fallbackDescMatch[1].trim();
 
     candidates.push({ 
       path, 
-      method: 'GET', 
+      method, 
       rawPrice: price, 
       network: '', asset: '', payTo: '', 
       label: label || description || path, 
       description: description || label || path, 
-      source: `universal:text:${sourceLabel}` 
+      source: `universal:block:${sourceLabel}` 
     });
   }
 
