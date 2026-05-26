@@ -79,7 +79,7 @@ function isValidCandidate(candidate) {
   ];
   if (noisePatterns.some(p => p.test(candidate.path))) return false;
   if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
-  if (!candidate.rawPrice || candidate.rawPrice === '0') return false;
+  // Harga tidak wajib di sini, biarkan enrichment yang mengisi
   return true;
 }
 
@@ -114,6 +114,61 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
+// Enrichment: Extract prices from well-known/x402
+// ============================================================
+function enrichFromWellKnown(candidates, wellKnownText) {
+  if (!wellKnownText) return candidates;
+  
+  const priceMap = new Map();
+  
+  // Strategy 1: JSON key-value where key is URL and value has price
+  try {
+    const json = JSON.parse(wellKnownText);
+    const walk = (obj) => {
+      if (!obj || typeof obj !== 'object') return;
+      if (Array.isArray(obj)) { obj.forEach(walk); return; }
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
+          const path = normalizePath(key);
+          const meta = value && typeof value === 'object' ? value : {};
+          const price = meta.price || meta.amount || meta.cost || '';
+          if (price) priceMap.set(path, String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)));
+        }
+      }
+      Object.values(obj).forEach(walk);
+    };
+    walk(json);
+  } catch { /* not JSON */ }
+  
+  // Strategy 2: Standard well-known with resources array
+  try {
+    const json = JSON.parse(wellKnownText);
+    const resources = json.resources || json.resourceDetails || [];
+    for (const res of resources) {
+      const path = normalizePath(res.path || res.endpoint || res.url || '');
+      const pricing = res.pricing || res;
+      const price = pricing.price || pricing.amount || pricing.cost || '';
+      if (path && price) {
+        priceMap.set(path, String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)));
+      }
+    }
+  } catch { /* not valid */ }
+  
+  // Apply prices to candidates
+  for (const c of candidates) {
+    if (!c.rawPrice) {
+      const foundPrice = priceMap.get(c.path);
+      if (foundPrice) {
+        c.rawPrice = foundPrice;
+        c.source = `${c.source}+wk-enrich`;
+      }
+    }
+  }
+  
+  return candidates;
+}
+
+// ============================================================
 // INTELLIGENT UNIVERSAL EXTRACTION ENGINE (UPGRADED)
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
@@ -129,37 +184,58 @@ function universalExtract(text, sourceLabel = 'unknown') {
   }
 
   // ============================================================
-  // NEW: Strategy 0 - Flexible HTML list items with code + price + description
-  // Matches any <li> that contains a <code>/path</code> and a $price nearby
+  // Strategy 0: Flexible HTML list items with code + price
+  // Matches any <li> that contains a path-like code element and a $price
   // ============================================================
   const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
   let liMatch;
   while ((liMatch = liPattern.exec(raw)) !== null) {
     const liContent = liMatch[1];
-    const codeMatch = liContent.match(/<code>([^<]+)<\/code>/i);
-    if (!codeMatch) continue;
-    const path = codeMatch[1].trim();
-    if (!path.startsWith('/')) continue;
     
+    // Find path from: <code>, <span class="path">, or <a href="/...">
+    let path = '';
+    const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) || 
+                      liContent.match(/<span[^>]*class="[^"]*path[^"]*"[^>]*>(\/[^<]+)<\/span>/i) ||
+                      liContent.match(/<span>(\/[^<]+)<\/span>/i);
+    const hrefMatch = liContent.match(/href="(\/[^"]+)"/i);
+    
+    if (codeMatch) {
+      path = codeMatch[1].trim();
+    } else if (hrefMatch) {
+      path = hrefMatch[1].trim();
+    }
+    
+    if (!path || !path.startsWith('/')) continue;
+    if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
+    
+    // Find price: $X.XX anywhere in the <li>
     const priceMatch = liContent.match(/\$([\d.]+)/);
-    if (!priceMatch) continue;
-    const price = String(Math.round(parseFloat(priceMatch[1]) * 1_000_000));
+    const price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
     
-    // Description: text after the last tag until </li>
-    const descMatch = liContent.match(/>([^<]{10,100})\s*$/);
-    const description = descMatch ? descMatch[1].trim() : path;
+    // Description: text after path and price, or the longest text snippet
+    let description = '';
+    const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) || 
+                      liContent.match(/- ([^<]{10,100})/);
+    if (descMatch) {
+      description = descMatch[1].trim();
+    } else {
+      // Strip all tags and get the longest text chunk
+      const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      const parts = stripped.split(/\s{2,}/);
+      description = parts.find(p => p.length > 15) || stripped.substring(0, 100);
+    }
     
     candidates.push({
       path, method: 'GET', rawPrice: price,
       network: '', asset: '', payTo: '',
-      label: description, description,
+      label: description || path,
+      description: description || path,
       source: `universal:html-li:${sourceLabel}`,
     });
   }
 
   // ============================================================
-  // Strategy 0.5 - Alternative llms.txt formats
-  // Matches: - tool_name ($0.01): description
+  // Strategy 0.5: Alternative llms.txt formats
   // ============================================================
   const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
   let llmsMatch;
@@ -230,7 +306,6 @@ function universalExtract(text, sourceLabel = 'unknown') {
       if (!obj || typeof obj !== 'object') return;
       if (Array.isArray(obj)) { obj.forEach(walk); return; }
       
-      // Non-standard well-known format where keys are URLs
       for (const [key, value] of Object.entries(obj)) {
         if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
           const path = normalizePath(key);
@@ -248,7 +323,6 @@ function universalExtract(text, sourceLabel = 'unknown') {
         }
       }
       
-      // Standard walk: look for objects with path/endpoint/url property
       const path = obj.path || obj.endpoint || obj.url;
       if (path && typeof path === 'string' && path.startsWith('/')) {
         const method = obj.method || 'GET';
@@ -332,6 +406,8 @@ async function fetchTextSource(url, timeout, label) {
 
 async function discoverFromAllSources(base, timeout) {
   const allCandidates = [];
+  let wellKnownText = '';
+  
   const sources = [
     { url: `https://${base}/llms.txt`,                              label: 'llms.txt' },
     { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402' },
@@ -348,6 +424,12 @@ async function discoverFromAllSources(base, timeout) {
   for (const src of sources) {
     const text = await fetchTextSource(src.url, timeout, src.label);
     if (!text) continue;
+    
+    // Save well-known text for enrichment
+    if (src.label === 'well-known-x402') {
+      wellKnownText = text;
+    }
+    
     const extracted = universalExtract(text, src.label);
     console.log(`[EXTRACT] ${src.label}: ${extracted.length} candidates`);
     allCandidates.push(...extracted);
@@ -360,7 +442,11 @@ async function discoverFromAllSources(base, timeout) {
     allCandidates.push(...extracted);
   }
 
-  return uniqCandidates(allCandidates);
+  // Enrich with well-known prices
+  let uniq = uniqCandidates(allCandidates);
+  uniq = enrichFromWellKnown(uniq, wellKnownText);
+  
+  return uniq;
 }
 
 // ============================================================
@@ -630,4 +716,3 @@ const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, downlo
 await Actor.pushData(output);
 console.log(`Scan complete. ${output.length} endpoints found.`);
 await Actor.exit();
-
