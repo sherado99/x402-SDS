@@ -57,12 +57,23 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     if (heading) previousHeading = heading;
   }
 
-  // Alternative llms.txt
+    // Alternative llms.txt
   const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
   let llmsAltMatch;
   while ((llmsAltMatch = llmsAltPattern.exec(raw)) !== null) {
-    candidates.push({ path: normalizePath('/tools/' + llmsAltMatch.trim().toLowerCase().replace(/\s+/g, '_')), method: 'GET', rawPrice: String(Math.round(parseFloat(llmsAltMatch) * 1_000_000)), network: '', asset: '', payTo: '', label: llmsAltMatch.trim(), description: llmsAltMatch.trim(), source: `universal:llms-alt:${sourceLabel}` });
+    candidates.push({ 
+      path: normalizePath('/tools/' + llmsAltMatch[1].trim().toLowerCase().replace(/\s+/g, '_')), 
+      method: 'GET', 
+      rawPrice: String(Math.round(parseFloat(llmsAltMatch[2]) * 1_000_000)), 
+      network: '', 
+      asset: '', 
+      payTo: '', 
+      label: llmsAltMatch[1].trim(), 
+      description: llmsAltMatch[3].trim(), 
+      source: `universal:llms-alt:${sourceLabel}` 
+    });
   }
+
 
             // ============================================================
   // SMART BLOCK UI & PLAIN TEXT EXTRACTION (UPGRADE V3)
