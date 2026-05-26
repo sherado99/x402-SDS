@@ -36,7 +36,11 @@ export async function crawlAPISources(base, timeout, proxyAgent) {
     { url: `https://${base}/llms.txt`,                        label: 'llms.txt' },
     { url: `https://${base}/.well-known/mcp.json`,            label: 'mcp.json' },
     { url: `https://${base}/api-docs.json`,                   label: 'api-docs' },
+    // TAMBAHKAN BARIS INI UNTUK MENANGKAP API INTERNAL BLOCKRUN:
+    { url: `https://${base}/api/models`,                      label: 'api-models' },
+    { url: `https://${base}/api/services`,                    label: 'api-services' },
   ];
+
   for (const src of sources ) {
     const text = await fetchTextSource(src.url, timeout, src.label, proxyAgent);
     if (text) rawPaths.push({ source: src.label, content: text });
