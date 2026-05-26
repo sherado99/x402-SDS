@@ -2,7 +2,6 @@ import { Actor } from 'apify';
 import { CheerioCrawler } from 'crawlee';
 import got from 'got';
 import crypto from 'crypto';
-import fs from 'fs/promises';
 import { Document, Packer, Paragraph, HeadingLevel } from 'docx';
 import PDFDocument from 'pdfkit';
 
@@ -113,11 +112,9 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// PRECISION PARSERS FOR STANDARD SOURCES
+// PARSER PRESISI UNTUK SUMBER STANDAR
 // ============================================================
-
-// -- Well-known /x402 --
-function parseWellKnownX402(text, base) {
+function parseWellKnownX402(text) {
   const candidates = [];
   try {
     const data = JSON.parse(text);
@@ -132,93 +129,32 @@ function parseWellKnownX402(text, base) {
       if (typeof pricing.pricePerImage === 'number') return String(Math.round(pricing.pricePerImage * 1_000_000));
       return '';
     };
-
     if (Array.isArray(data.resources)) {
       for (const res of data.resources) {
         if (typeof res === 'object' && res) {
           const path = res.path || res.endpoint || res.url;
           if (!path) continue;
-          candidates.push(normalizeCandidate({
-            path, method: res.method || 'GET',
-            rawPrice: extractPrice(res.pricing || res),
-            network: res.network || data.network || '',
-            asset: res.asset || data.asset || '',
-            label: res.name || res.id || '',
-            description: res.description || '',
-            source: '/.well-known/x402',
-          }));
+          candidates.push(normalizeCandidate({ path, method: res.method || 'GET', rawPrice: extractPrice(res.pricing || res), network: res.network || data.network || '', asset: res.asset || data.asset || '', label: res.name || res.id || '', description: res.description || '', source: '/.well-known/x402' }));
         } else if (typeof res === 'string') {
           const parts = res.trim().split(/\s+/);
-          const method = parts.length > 1 ? parts[0] : 'GET';
-          const path = parts.length > 1 ? parts.slice(1).join(' ') : parts[0];
-          candidates.push(normalizeCandidate({
-            path, method, rawPrice: '',
-            network: data.network || '', asset: data.asset || '',
-            label: path, description: '', source: '/.well-known/x402',
-          }));
+          candidates.push(normalizeCandidate({ path: parts.length > 1 ? parts.slice(1).join(' ') : parts[0], method: parts.length > 1 ? parts[0] : 'GET', rawPrice: '', network: data.network || '', asset: data.asset || '', label: parts[0], description: '', source: '/.well-known/x402' }));
         }
       }
     }
-
-    if (Array.isArray(data.resourceDetails)) {
-      for (const detail of data.resourceDetails) {
-        const path = detail.path || detail.endpoint;
-        if (!path) continue;
-        candidates.push(normalizeCandidate({
-          path, method: detail.method || 'GET',
-          rawPrice: extractPrice(detail.pricing || detail),
-          network: detail.network || data.network || '',
-          asset: detail.asset || data.asset || '',
-          label: detail.name || detail.label || detail.path || '',
-          description: detail.description || '',
-          source: '/.well-known/x402',
-        }));
-      }
-    }
-
     if (Array.isArray(data.services)) {
       for (const svc of data.services) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
         let rawPrice = extractPrice(svc.pricing || svc.price || {});
-        if (!rawPrice && Array.isArray(svc.models) && svc.models.length > 0) {
-          rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
-        }
+        if (!rawPrice && Array.isArray(svc.models) && svc.models.length > 0) rawPrice = extractPrice(svc.models[0].pricing || svc.models[0].price || {});
         const payment = svc.payment || {};
-        candidates.push(normalizeCandidate({
-          path, method: svc.method || 'POST',
-          rawPrice,
-          network: payment.network || svc.network || data.network || '',
-          asset: payment.asset || svc.asset || data.asset || '',
-          label: svc.name || svc.id || svc.label || '',
-          description: svc.description || '',
-          source: '/.well-known/x402',
-        }));
-      }
-    }
-
-    // Non-standard: keys as URLs
-    for (const [key, value] of Object.entries(data)) {
-      if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
-        const path = normalizePath(key);
-        const meta = value && typeof value === 'object' ? value : {};
-        const price = meta.price || meta.amount || meta.cost || '';
-        const method = meta.method || 'GET';
-        candidates.push({
-          path, method,
-          rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '',
-          network: meta.network || '', asset: meta.asset || '', payTo: meta.payTo || '',
-          label: meta.label || meta.name || meta.id || meta.summary || '',
-          description: meta.description || meta.summary || '',
-          source: '/.well-known/x402',
-        });
+        candidates.push(normalizeCandidate({ path, method: svc.method || 'POST', rawPrice, network: payment.network || svc.network || data.network || '', asset: payment.asset || svc.asset || data.asset || '', label: svc.name || svc.id || svc.label || '', description: svc.description || '', source: '/.well-known/x402' }));
       }
     }
   } catch { /* not JSON */ }
   return candidates;
 }
 
-// -- Agent card --
 function parseAgentCard(text) {
   const candidates = [];
   try {
@@ -227,21 +163,12 @@ function parseAgentCard(text) {
     for (const svc of services) {
       const path = svc.endpoint || svc.path || svc.url;
       if (!path) continue;
-      candidates.push(normalizeCandidate({
-        path, method: svc.method || 'GET',
-        rawPrice: String(svc.price || svc.cost || ''),
-        network: svc.network || '',
-        asset: svc.asset || '',
-        label: svc.name || svc.id || '',
-        description: svc.description || '',
-        source: 'agent-card',
-      }));
+      candidates.push(normalizeCandidate({ path, method: svc.method || 'GET', rawPrice: String(svc.price || svc.cost || ''), network: svc.network || '', asset: svc.asset || '', label: svc.name || svc.id || '', description: svc.description || '', source: 'agent-card' }));
     }
   } catch { /* not JSON */ }
   return candidates;
 }
 
-// -- OpenAPI --
 function parseOpenAPI(text) {
   const candidates = [];
   try {
@@ -251,43 +178,19 @@ function parseOpenAPI(text) {
       const methodKey = Object.keys(methods || {})[0] || 'get';
       const operation = methods?.[methodKey] || {};
       let price = '', network = '', asset = '', description = '';
-
-      if (operation['x-payment-info']) {
-        const pi = operation['x-payment-info'];
-        price = String(pi.price || pi.amount || '');
-        network = pi.network || ''; asset = pi.asset || pi.token || '';
-        description = pi.description || '';
-      }
-
+      if (operation['x-payment-info']) { const pi = operation['x-payment-info']; price = String(pi.price || pi.amount || ''); network = pi.network || ''; asset = pi.asset || pi.token || ''; description = pi.description || ''; }
       const resp402 = operation.responses?.['402'];
       if (resp402?.content?.['application/json']?.example?.accepts) {
         const offer = resp402.content['application/json'].example.accepts[0] || {};
-        price = price || String(offer.maxAmountRequired || offer.amount || '');
-        network = network || offer.network || '';
-        asset = asset || offer.asset || '';
-        description = description || offer.description || operation.description || '';
+        price = price || String(offer.maxAmountRequired || offer.amount || ''); network = network || offer.network || ''; asset = asset || offer.asset || ''; description = description || offer.description || operation.description || '';
       }
-
-      if (!price && spec['x-payment-info']) {
-        const pi = spec['x-payment-info'];
-        price = String(pi.price || '');
-        network = network || pi.network || '';
-        asset = asset || pi.asset || '';
-      }
-
-      candidates.push(normalizeCandidate({
-        path, method: methodKey.toUpperCase(),
-        rawPrice: price, network, asset,
-        label: operation.summary || operation.operationId || '',
-        description: description || operation.description || '',
-        source: 'openapi',
-      }));
+      if (!price && spec['x-payment-info']) { const pi = spec['x-payment-info']; price = String(pi.price || ''); network = network || pi.network || ''; asset = asset || pi.asset || ''; }
+      candidates.push(normalizeCandidate({ path, method: methodKey.toUpperCase(), rawPrice: price, network, asset, label: operation.summary || operation.operationId || '', description: description || operation.description || '', source: 'openapi' }));
     }
   } catch { /* not JSON */ }
   return candidates;
 }
 
-// -- Health --
 function parseHealth(text) {
   const candidates = [];
   try {
@@ -295,30 +198,16 @@ function parseHealth(text) {
     if (data.endpoints && typeof data.endpoints === 'object' && !Array.isArray(data.endpoints)) {
       for (const [path, info] of Object.entries(data.endpoints)) {
         let rawPrice = ''; const network = data.network || '';
-        if (typeof info.price === 'string') {
-          const match = info.price.match(/\$([\d.]+)/);
-          if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1_000_000));
-          else if (info.price === 'free' || info.price === '0') rawPrice = '0';
-        } else if (typeof info.price === 'number') rawPrice = String(info.price);
-        candidates.push(normalizeCandidate({
-          path, method: 'GET', rawPrice, network, asset: '',
-          label: info.description || path, description: info.description || '', source: '/health',
-        }));
+        if (typeof info.price === 'string') { const match = info.price.match(/\$([\d.]+)/); if (match) rawPrice = String(Math.round(parseFloat(match[1]) * 1_000_000)); else if (info.price === 'free' || info.price === '0') rawPrice = '0'; }
+        else if (typeof info.price === 'number') rawPrice = String(info.price);
+        candidates.push(normalizeCandidate({ path, method: 'GET', rawPrice, network, asset: '', label: info.description || path, description: info.description || '', source: '/health' }));
       }
     }
     if (Array.isArray(data.endpoints)) {
       for (const svc of data.endpoints) {
         const path = svc.endpoint || svc.path || svc.url;
         if (!path) continue;
-        candidates.push(normalizeCandidate({
-          path, method: svc.method || 'GET',
-          rawPrice: String(svc.price || svc.x402Price || ''),
-          network: svc.network || data.network || '',
-          asset: svc.asset || '',
-          label: svc.name || svc.id || svc.description || '',
-          description: svc.description || '',
-          source: '/health',
-        }));
+        candidates.push(normalizeCandidate({ path, method: svc.method || 'GET', rawPrice: String(svc.price || svc.x402Price || ''), network: svc.network || data.network || '', asset: svc.asset || '', label: svc.name || svc.id || svc.description || '', description: svc.description || '', source: '/health' }));
       }
     }
   } catch { /* not JSON */ }
@@ -326,35 +215,28 @@ function parseHealth(text) {
 }
 
 // ============================================================
-// UNIVERSAL EXTRACTION (for scraped HTML and unknown formats)
+// PARSER UNIVERSAL UNTUK HTML / TEKS
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
   const raw = String(text || '');
 
-  // -------- Pre‑extract pricing table fallback --------
   const tablePrices = new Map();
   const tableRegex = /\|\s*([A-Za-z][\w\s/-]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
   let tm;
-  while ((tm = tableRegex.exec(raw)) !== null) {
-    tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
-  }
+  while ((tm = tableRegex.exec(raw)) !== null) tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
 
-  // Strategy 1: Flexible <li> extraction (clean → aggressive fallback)
+  // <li> extraction
   const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
   let liMatch;
   while ((liMatch = liPattern.exec(raw)) !== null) {
     const liContent = liMatch[1];
     let path = '';
-    const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) ||
-                      liContent.match(/<span[^>]*>(\/[^<]+)<\/span>/i);
+    const codeMatch = liContent.match(/<code>(\/[^<]+)<\/code>/i) || liContent.match(/<span[^>]*>(\/[^<]+)<\/span>/i);
     const hrefMatch = liContent.match(/href="(\/[^"]+)"/i);
     if (codeMatch) path = codeMatch[1].trim();
     else if (hrefMatch) path = hrefMatch[1].trim();
-    if (!path || !path.startsWith('/')) {
-      const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/);
-      if (pathMatch) path = pathMatch[1].trim();
-    }
+    if (!path || !path.startsWith('/')) { const pathMatch = liContent.match(/(\/[a-zA-Z0-9_\/.-]+)/); if (pathMatch) path = pathMatch[1].trim(); }
     if (!path || !path.startsWith('/')) continue;
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
     const priceMatch = liContent.match(/\$\s*([\d.]+)/);
@@ -363,19 +245,11 @@ function universalExtract(text, sourceLabel = 'unknown') {
     let description = '';
     const descMatch = liContent.match(/>([^<]{10,100})<\/li>/) || liContent.match(/- ([^<]{10,100})/);
     if (descMatch) description = descMatch[1].trim();
-    else {
-      const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-      description = stripped.substring(0, 120);
-    }
-    candidates.push({
-      path, method: 'GET', rawPrice: price,
-      network: '', asset: '', payTo: '',
-      label: description || path, description: description || path,
-      source: `universal:html-li:${sourceLabel}`,
-    });
+    else { const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(); description = stripped.substring(0, 120); }
+    candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: description || path, description: description || path, source: `universal:html-li:${sourceLabel}` });
   }
 
-  // Strategy 2: Markdown blocks
+  // Markdown blocks
   const mdBlocks = raw.split(/(?=^#{1,3}\s)/m);
   let previousHeading = '';
   for (const block of mdBlocks) {
@@ -387,27 +261,20 @@ function universalExtract(text, sourceLabel = 'unknown') {
     const path   = pathMatch[1];
     const priceMatch = block.match(/Price:\s*\$?([\d.]+)/i);
     let price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
-    if (!price) {
-      const headingLower = heading.toLowerCase();
-      for (const [key, val] of tablePrices) if (headingLower.includes(key) || key.includes(headingLower)) { price = val; break; }
-    }
+    if (!price) { const headingLower = heading.toLowerCase(); for (const [key, val] of tablePrices) if (headingLower.includes(key) || key.includes(headingLower)) { price = val; break; } }
     const cleanHeading = heading.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '').trim();
     let label = cleanHeading || previousHeading || '';
     if (label.includes('\n') || label.includes('#')) label = previousHeading || '';
     if (!label) label = path.split('/').filter(Boolean).slice(-2).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
     const lines = block.split('\n');
     let description = '';
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.includes('Price:')) continue;
-      if (trimmed.length > 15) { description = trimmed; break; }
-    }
+    for (const line of lines) { const trimmed = line.trim(); if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.includes('Price:')) continue; if (trimmed.length > 15) { description = trimmed; break; } }
     if (!description) description = label;
     candidates.push({ path, method, rawPrice: price, network: '', asset: '', payTo: '', label, description, source: `universal:md:${sourceLabel}` });
     if (heading) previousHeading = heading;
   }
 
-  // Strategy 3: Alternative llms.txt ( - name ($price): desc )
+  // Alternative llms.txt
   const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
   let llmsAltMatch;
   while ((llmsAltMatch = llmsAltPattern.exec(raw)) !== null) {
@@ -418,7 +285,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path, method: 'GET', rawPrice: price, network: '', asset: '', payTo: '', label: name, description, source: `universal:llms-alt:${sourceLabel}` });
   }
 
-  // Strategy 4: HTML href extraction
+  // HTML href extraction
   const htmlPathMatches = raw.matchAll(/(?:href|src|action)=["'](\/[^"']+)["']/gi);
   for (const match of htmlPathMatches) {
     const path = match[1];
@@ -431,7 +298,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
     candidates.push({ path, method: 'GET', rawPrice: priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '', network: '', asset: '', payTo: '', label: labelMatch ? labelMatch[1].trim() : '', description: '', source: `universal:html:${sourceLabel}` });
   }
 
-  // Strategy 5: Plain text (safe regex that stops at non-path characters)
+  // Plain text
   const plainMatches = raw.matchAll(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[^\s\n"\]\},]+)/gi);
   for (const match of plainMatches) {
     const method = match[1].toUpperCase();
@@ -447,90 +314,9 @@ function universalExtract(text, sourceLabel = 'unknown') {
 }
 
 // ============================================================
-// Discovery Pipeline (routes sources to the right parser)
+// CRAWLER (LANGKAH 1) – Kumpulkan halaman
 // ============================================================
-async function fetchTextSource(url, timeout, label) {
-  try {
-    const response = await got(url, {
-      method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 },
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' },
-    });
-    if (response.statusCode === 200 && response.body) {
-      console.log(`[FETCH] ${label}: ${response.body.length} bytes`);
-      return response.body;
-    }
-  } catch (err) { console.log(`[FETCH] ${label} error: ${err.message}`); }
-  return null;
-}
-
-async function discoverFromAllSources(base, timeout) {
-  const allCandidates = [];
-
-  // Standard JSON sources → precision parsers
-  const standardSources = [
-    { label: 'well-known-x402',         parser: parseWellKnownX402 },
-    { label: 'agent-card',              parser: parseAgentCard },
-    { label: 'agent.json',              parser: parseAgentCard },
-    { label: 'agent-services',          parser: parseAgentCard },
-    { label: 'openapi',                 parser: parseOpenAPI },
-    { label: 'swagger',                 parser: parseOpenAPI },
-    { label: 'health',                  parser: parseHealth },
-  ];
-
-  const standardUrls = [
-    { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402' },
-    { url: `https://${base}/.well-known/agent-card.json`,           label: 'agent-card' },
-    { url: `https://${base}/.well-known/agent.json`,                label: 'agent.json' },
-    { url: `https://${base}/.well-known/agent-services.json`,       label: 'agent-services' },
-    { url: `https://${base}/openapi.json`,                          label: 'openapi' },
-    { url: `https://${base}/swagger.json`,                          label: 'swagger' },
-    { url: `https://${base}/health`,                                label: 'health' },
-  ];
-
-  for (const src of standardUrls) {
-    const text = await fetchTextSource(src.url, timeout, src.label);
-    if (!text) continue;
-    const parserDef = standardSources.find(s => s.label === src.label);
-    let extracted = [];
-    if (parserDef) {
-      extracted = parserDef.parser(text, base);
-      console.log(`[PARSE] ${src.label}: ${extracted.length} candidates (precision parser)`);
-    } else {
-      extracted = universalExtract(text, src.label);
-      console.log(`[EXTRACT] ${src.label}: ${extracted.length} candidates (universal)`);
-    }
-    allCandidates.push(...extracted);
-  }
-
-  // llms.txt and mcp.json → universal extractor
-  const textSources = [
-    { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
-    { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
-    { url: `https://${base}/api-docs.json`, label: 'api-docs' },
-  ];
-  for (const src of textSources) {
-    const text = await fetchTextSource(src.url, timeout, src.label);
-    if (!text) continue;
-    const extracted = universalExtract(text, src.label);
-    console.log(`[EXTRACT] ${src.label}: ${extracted.length} candidates`);
-    allCandidates.push(...extracted);
-  }
-
-  // HTML scraper → universal extractor
-  const staticPages = await scrapeStaticPages(base, timeout);
-  for (const page of staticPages) {
-    const extracted = universalExtract(page.html, `scraper:${page.url}`);
-    console.log(`[EXTRACT] scraper:${page.url}: ${extracted.length} candidates`);
-    allCandidates.push(...extracted);
-  }
-
-  return uniqCandidates(allCandidates);
-}
-
-// ============================================================
-// Static Scraper
-// ============================================================
-async function scrapeStaticPages(base, timeout) {
+async function crawlPages(base, timeout) {
   const startUrls = [
     `https://${base}`, `https://${base}/docs`, `https://${base}/api`,
     `https://${base}/developers`, `https://${base}/pricing`,
@@ -546,38 +332,19 @@ async function scrapeStaticPages(base, timeout) {
       if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
         try {
           const bodyText = String(response?.body || '');
-          if (bodyText) {
-            const extracted = universalExtract(bodyText, `scraper:${request.url}`);
-            if (extracted.length > 0) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[SCRAPER] Found JSON/Text endpoint data: ${request.url}`); return; }
-          }
-        } catch (err) { console.log(`[SCRAPER] Error handling non-HTML response: ${err.message}`); }
+          if (bodyText && bodyText.length > 10) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[CRAWLER] Non-HTML page saved: ${request.url}`); }
+        } catch (err) { console.log(`[CRAWLER] Error saving non-HTML: ${err.message}`); }
         return;
       }
       try {
         const bodyText = $('body').text().toLowerCase();
         const matched = keywords.filter((kw) => bodyText.includes(kw));
-        if (matched.length > 0) { discovered.set(request.url, { url: request.url, html: $.html() }); console.log(`[SCRAPER] Found: ${request.url}`); }
-        await enqueueLinks({
-          transformRequestFunction(req) {
-            try {
-              const links = $('a[href]').toArray();
-              for (const el of links) {
-                const href = $(el).attr('href') || '';
-                try {
-                  const fullHref = new URL(href, request.url).href;
-                  if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req;
-                } catch { /* invalid href */ }
-              }
-            } catch { /* ignore */ }
-            return null;
-          },
-        });
+        if (matched.length > 0) { discovered.set(request.url, { url: request.url, html: $.html() }); console.log(`[CRAWLER] Found: ${request.url}`); }
+        await enqueueLinks({ transformRequestFunction(req) { try { const links = $('a[href]').toArray(); for (const el of links) { const href = $(el).attr('href') || ''; try { const fullHref = new URL(href, request.url).href; if (fullHref === req.url && keywords.some((kw) => $(el).text().toLowerCase().includes(kw))) return req; } catch { /* invalid href */ } } } catch { /* ignore */ } return null; } });
       } catch (err) {
-        console.log(`[SCRAPER] Cheerio parsing failed for ${request.url}: ${err.message}`);
-        try {
-          const bodyText = String(response?.body || '');
-          if (bodyText) { const extracted = universalExtract(bodyText, `scraper:${request.url}`); if (extracted.length > 0) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[SCRAPER] Extracted endpoints from raw body: ${request.url}`); } }
-        } catch (rawErr) { console.log(`[SCRAPER] Failed to extract from raw body: ${rawErr.message}`); }
+        console.log(`[CRAWLER] Cheerio failed for ${request.url}: ${err.message}`);
+        const bodyText = String(response?.body || '');
+        if (bodyText && bodyText.length > 10) { discovered.set(request.url, { url: request.url, html: bodyText }); console.log(`[CRAWLER] Saved raw body: ${request.url}`); }
       }
     },
   });
@@ -586,7 +353,85 @@ async function scrapeStaticPages(base, timeout) {
 }
 
 // ============================================================
-// Verification
+// SCRAPER (LANGKAH 2) – Ambil isi mentah dari halaman
+// (Crawler sudah menghasilkan array {url, html}, jadi scraper hanya mengumpulkan)
+// ============================================================
+async function scrapeFromPages(base, timeout) {
+  const pages = await crawlPages(base, timeout);
+  console.log(`[SCRAPER] Collected ${pages.length} pages from crawler`);
+  return pages;
+}
+
+// ============================================================
+// SCANNER (LANGKAH 3) – Ambil data dari sumber standar API
+// ============================================================
+async function fetchTextSource(url, timeout, label) {
+  try {
+    const response = await got(url, { method: 'GET', timeout: { request: timeout }, throwHttpErrors: false, retry: { limit: 0 }, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' } });
+    if (response.statusCode === 200 && response.body) { console.log(`[SCANNER] ${label}: ${response.body.length} bytes`); return response.body; }
+  } catch (err) { console.log(`[SCANNER] ${label} error: ${err.message}`); }
+  return null;
+}
+
+async function scanStandardSources(base, timeout) {
+  const sources = [
+    { url: `https://${base}/.well-known/x402`,                      label: 'well-known-x402', parser: parseWellKnownX402 },
+    { url: `https://${base}/.well-known/agent-card.json`,           label: 'agent-card',      parser: parseAgentCard },
+    { url: `https://${base}/.well-known/agent.json`,                label: 'agent.json',      parser: parseAgentCard },
+    { url: `https://${base}/.well-known/agent-services.json`,       label: 'agent-services',  parser: parseAgentCard },
+    { url: `https://${base}/openapi.json`,                          label: 'openapi',         parser: parseOpenAPI },
+    { url: `https://${base}/swagger.json`,                          label: 'swagger',         parser: parseOpenAPI },
+    { url: `https://${base}/health`,                                label: 'health',          parser: parseHealth },
+  ];
+
+  const allCandidates = [];
+  for (const src of sources) {
+    const text = await fetchTextSource(src.url, timeout, src.label);
+    if (!text) continue;
+    const extracted = src.parser(text);
+    console.log(`[SCANNER] ${src.label}: ${extracted.length} candidates`);
+    allCandidates.push(...extracted);
+  }
+  return allCandidates;
+}
+
+// ============================================================
+// PARSER (LANGKAH 4) – Semua teks mentah (scraper + scanner tambahan) diparsing
+// ============================================================
+async function parseAllSources(base, timeout) {
+  const allCandidates = [];
+
+  // 1. Crawler + Scraper pages → universal extractor
+  const scraperPages = await scrapeFromPages(base, timeout);
+  for (const page of scraperPages) {
+    const extracted = universalExtract(page.html, `scraper:${page.url}`);
+    console.log(`[PARSER] scraper:${page.url}: ${extracted.length} candidates`);
+    allCandidates.push(...extracted);
+  }
+
+  // 2. Standard API sources → precision parsers
+  const standardCandidates = await scanStandardSources(base, timeout);
+  allCandidates.push(...standardCandidates);
+
+  // 3. Tambahan: llms.txt, mcp.json, api-docs → universal extractor
+  const extraSources = [
+    { url: `https://${base}/llms.txt`,     label: 'llms.txt' },
+    { url: `https://${base}/.well-known/mcp.json`, label: 'mcp.json' },
+    { url: `https://${base}/api-docs.json`, label: 'api-docs' },
+  ];
+  for (const src of extraSources) {
+    const text = await fetchTextSource(src.url, timeout, src.label);
+    if (!text) continue;
+    const extracted = universalExtract(text, src.label);
+    console.log(`[PARSER] ${src.label}: ${extracted.length} candidates`);
+    allCandidates.push(...extracted);
+  }
+
+  return uniqCandidates(allCandidates);
+}
+
+// ============================================================
+// VERIFIER – Verifikasi endpoint
 // ============================================================
 async function checkEndpoint(base, candidate, timeout) {
   const path   = normalizePath(candidate.path);
@@ -622,11 +467,7 @@ async function checkEndpoint(base, candidate, timeout) {
 // Report Generation
 // ============================================================
 async function generateDOCX(domain, results) {
-  const children = [
-    new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }),
-    new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }),
-    new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }),
-  ];
+  const children = [ new Paragraph({ text: 'X402 Domain Scan Report', heading: HeadingLevel.HEADING_1, spacing: { after: 120 } }), new Paragraph({ text: `Domain: ${domain}`, spacing: { after: 60 } }), new Paragraph({ text: `Scan time: ${new Date().toISOString()}`, spacing: { after: 200 } }) ];
   if (results.length === 0) children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   else for (const row of results) {
     children.push(new Paragraph({ text: `${row.path} [${row.status}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
@@ -683,15 +524,23 @@ const allResults = [];
 const manualList = (manualPaths || '').split(/\r?\n/g).map(x => x.trim()).filter(Boolean).map(normalizePath);
 
 for (const base of targetDomains) {
-  console.log(`[SDS] Starting discovery for ${base}`);
+  console.log(`[SDS] Starting pipeline for ${base}`);
 
-  let candidates = await discoverFromAllSources(base, timeout);
+  let candidates = [];
 
-  if (candidates.length === 0 && manualList.length > 0) {
+  // JIKA ADA PATH MANUAL, LANGSUNG GUNAKAN ITU
+  if (manualList.length > 0) {
+    console.log(`[SDS] Manual paths provided, skipping discovery. Using ${manualList.length} paths.`);
     candidates = manualList.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual' }));
-  }
-  if (candidates.length === 0) {
-    candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+  } else {
+    // JIKA TIDAK, JALANKAN PIPELINE CRAWLER → SCRAPER → SCANNER → PARSER
+    console.log('[SDS] No manual paths. Running full pipeline: Crawler → Scraper → Scanner → Parser');
+    candidates = await parseAllSources(base, timeout);
+
+    if (candidates.length === 0) {
+      console.log('[SDS] Pipeline returned 0 candidates. Falling back to dictionary.');
+      candidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+    }
   }
 
   candidates = candidates.filter(isValidCandidate);
