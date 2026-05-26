@@ -10,25 +10,17 @@ import { generateDOCX } from './reporters/docx.js';
 import { generatePDF } from './reporters/pdf.js';
 import { saveFileToKVS } from './reporters/storage.js';
 
-// Fungsi kecil untuk memetakan hasil scraper menjadi format scanner
 function scanResponses(scraped) {
   return scraped.map(({ candidate, statusCode, body, responseTime, error }) => {
     const bodyHash = body ? sha256(body) : '';
-    return {
-      candidate,
-      statusCode,
-      body,
-      bodyHash,
-      responseTime,
-      errorMessage: error || '',
-    };
+    return { candidate, statusCode, body, bodyHash, responseTime, errorMessage: error || '' };
   });
 }
 
-async function runPipelineForDomain(base, specificPath, timeout, maxPaths, proxyAgent, proxyConfiguration) {
+async function runPipelineForDomain(base, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration) {
   console.log(`\n[SDS] === Pipeline for ${base}${specificPath || ''} ===\n`);
 
-  // Mode spesifik path
+  // Mode spesifik path (dari URL)
   if (specificPath) {
     console.log('[SDS] Specific path mode – skipping discovery.');
     const candidate = normalizeCandidate({ path: specificPath, method: 'GET', source: 'manual' });
@@ -38,20 +30,23 @@ async function runPipelineForDomain(base, specificPath, timeout, maxPaths, proxy
     return finalFilter(parsedCandidates, base);
   }
 
-  // Mode domain: pipeline lengkap
   // 1. CRAWLER
   const rawAPISources = await crawlAPISources(base, timeout, proxyAgent);
   const htmlPages = await crawlHTMLPages(base, timeout, proxyConfiguration);
-  const allRawContent = [
-    ...rawAPISources,
-    ...htmlPages.map(p => ({ source: 'scraper', content: p.html })),
-  ];
+  const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // 2. SCRAPER
-  const dictionaryCandidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
-  console.log(`[SCRAPER] ${dictionaryCandidates.length} dictionary paths to scrape`);
-  const scrapedData = await scrapeEndpoints(base, dictionaryCandidates, timeout, proxyConfiguration);
+  // 2. SCRAPER (Gabungan Dictionary + Manual Paths dari UI)
+  let pathsToScrape = [];
+  if (manualPathsArray && manualPathsArray.length > 0) {
+    pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
+  } else {
+    pathsToScrape = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} dictionary paths`);
+  }
+  
+  const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
 
   // 3. SCANNER
   const scannedData = scanResponses(scrapedData);
@@ -74,12 +69,25 @@ async function runPipelineForDomain(base, specificPath, timeout, maxPaths, proxy
 await Actor.init();
 
 const input = (await Actor.getInput()) || {};
-let { domain, maxPaths = DEFAULT_MAX_PATHS, timeout = DEFAULT_TIMEOUT } = input;
+let { 
+  domain, 
+  paths: manualPathsStr = '', 
+  maxPaths = DEFAULT_MAX_PATHS, 
+  timeout = DEFAULT_TIMEOUT,
+  useResidentialProxy = false,
+  includeSubdomains = false
+} = input;
 
 if (!domain) { 
   await Actor.fail('Domain is required.'); 
   await Actor.exit(); 
 }
+
+// Parse manual paths dari textarea UI
+const manualPathsArray = manualPathsStr
+  .split('\n')
+  .map(p => p.trim())
+  .filter(p => p.length > 0);
 
 // Parse domain dan specificPath
 let specificPath = null;
@@ -90,23 +98,29 @@ if (urlMatch) {
   if (urlMatch[3]) specificPath = normalizePath(urlMatch[3]);
 }
 
-// Setup Proxy
+// Setup Proxy (Menghormati tombol useResidentialProxy dari UI)
 const proxyAgent = getProxyAgent();
-const proxyConfiguration = await Actor.createProxyConfiguration(); // Bawaan Apify untuk crawlee
+const proxyConfigOptions = useResidentialProxy ? { groups: ['RESIDENTIAL'] } : undefined;
+const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfigOptions);
 
 const allResults = [];
 
 if (specificPath) {
-  const final = await runPipelineForDomain(domain, specificPath, timeout, maxPaths, proxyAgent, proxyConfiguration);
+  const final = await runPipelineForDomain(domain, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
   allResults.push(...final);
 } else {
   const targetDomains = [domain];
-  const lowerDomain = domain.toLowerCase();
-  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
-    targetDomains.push(`api.${domain}`);
+  
+  // Menghormati tombol includeSubdomains dari UI
+  if (includeSubdomains) {
+    const lowerDomain = domain.toLowerCase();
+    if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
+      targetDomains.push(`api.${domain}`);
+    }
   }
+
   for (const base of targetDomains) {
-    const final = await runPipelineForDomain(base, null, timeout, maxPaths, proxyAgent, proxyConfiguration);
+    const final = await runPipelineForDomain(base, null, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
     allResults.push(...final);
   }
 }
