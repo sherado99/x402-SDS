@@ -20,7 +20,17 @@
         "type": "string",
         "title": "Status",
         "description": "Scan status.",
-        "enum": ["success", "error", "not_found", "public_info"],
+        "enum": [
+          "success",
+          "error",
+          "not_found",
+          "public_info",
+          "timeout",
+          "blocked",
+          "unauthorized",
+          "rate_limited",
+          "network_error"
+        ],
         "example": "success"
       },
       "x402Version": {
