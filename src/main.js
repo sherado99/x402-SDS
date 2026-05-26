@@ -92,11 +92,18 @@ const manualPathsArray = manualPathsStr
 // Parse domain dan specificPath
 let specificPath = null;
 domain = domain.trim();
-const urlMatch = domain.match(/^(https?:\/\/ )?([^\/]+)(\/.*)?$/i);
+const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
 if (urlMatch) {
   domain = urlMatch[2];
-  if (urlMatch[3]) specificPath = normalizePath(urlMatch[3]);
+  if (urlMatch[3]) {
+    const parsedPath = normalizePath(urlMatch[3]);
+    // PERBAIKAN: Abaikan jika path-nya hanya '/' atau kosong
+    if (parsedPath !== '/' && parsedPath !== '') {
+      specificPath = parsedPath;
+    }
+  }
 }
+
 
 // Setup Proxy (Menghormati tombol useResidentialProxy dari UI)
 const proxyAgent = getProxyAgent();
