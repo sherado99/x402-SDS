@@ -28,9 +28,7 @@ const BUILT_IN_DICTIONARY = [
 // ============================================================
 // Helpers
 // ============================================================
-function sha256(raw) {
-  return crypto.createHash('sha256').update(String(raw || '')).digest('hex');
-}
+function sha256(raw) { return crypto.createHash('sha256').update(String(raw || '')).digest('hex'); }
 
 function normalizePath(rawPath) {
   let p = String(rawPath || '').trim();
@@ -72,8 +70,6 @@ function isValidCandidate(candidate) {
   if (!candidate?.path) return false;
   if (!candidate.path.startsWith('/')) return false;
   if (candidate.path.length > 300) return false;
-
-  // Filter noise: reject static assets and non-API paths
   const noisePatterns = [
     /\/_next\//i, /\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i,
     /\/static\//i, /\/chunks\//i, /\/media\//i,
@@ -82,13 +78,8 @@ function isValidCandidate(candidate) {
     /\/v1\/x402\/?$/i, /\/v2\/x402\/?$/i, /\/\.well-known\/x402\/?$/i,
   ];
   if (noisePatterns.some(p => p.test(candidate.path))) return false;
-
-  // Reject paths with newlines or markdown artifacts
   if (candidate.path.includes('\n') || candidate.path.includes('```')) return false;
-
-  // Only accept endpoints with a price
   if (!candidate.rawPrice || candidate.rawPrice === '0') return false;
-
   return true;
 }
 
@@ -123,7 +114,7 @@ function normalizeCandidate(raw = {}) {
 }
 
 // ============================================================
-// UNIVERSAL EXTRACTION ENGINE (REFINED)
+// INTELLIGENT UNIVERSAL EXTRACTION ENGINE
 // ============================================================
 function universalExtract(text, sourceLabel = 'unknown') {
   const candidates = [];
@@ -135,6 +126,26 @@ function universalExtract(text, sourceLabel = 'unknown') {
   let tm;
   while ((tm = tableRegex.exec(raw)) !== null) {
     tablePrices.set(tm[1].trim().toLowerCase(), String(Math.round(parseFloat(tm[2]) * 1_000_000)));
+  }
+
+  // ============================================================
+  // NEW: Strategy 0 - Non-standard llms.txt formats
+  // Matches: - tool_name ($0.01): description
+  // ============================================================
+  const llmsAltPattern = /-\s+(.+?)\s*\(\$?([\d.]+)\)\s*:\s*(.+)/gi;
+  let llmsMatch;
+  while ((llmsMatch = llmsAltPattern.exec(raw)) !== null) {
+    const name = llmsMatch[1].trim();
+    const price = String(Math.round(parseFloat(llmsMatch[2]) * 1_000_000));
+    const description = llmsMatch[3].trim();
+    // Infer path from tool name (snake_case or kebab-case)
+    const path = normalizePath('/tools/' + name.toLowerCase().replace(/\s+/g, '_'));
+    candidates.push({
+      path, method: 'GET', rawPrice: price,
+      network: '', asset: '', payTo: '',
+      label: name, description,
+      source: `universal:llms-alt:${sourceLabel}`,
+    });
   }
 
   // -------- Strategy 1: Markdown blocks --------
@@ -152,28 +163,20 @@ function universalExtract(text, sourceLabel = 'unknown') {
     const method = pathMatch[0].split(/\s+/)[0].toUpperCase();
     const path   = pathMatch[1];
 
-    // Price: inline first, then table fallback
     const priceMatch = block.match(/Price:\s*\$?([\d.]+)/i);
     let price = priceMatch ? String(Math.round(parseFloat(priceMatch[1]) * 1_000_000)) : '';
     if (!price) {
-      // Try table fallback using the endpoint name from heading
       const headingLower = heading.toLowerCase();
       for (const [key, val] of tablePrices) {
-        if (headingLower.includes(key) || key.includes(headingLower)) {
-          price = val;
-          break;
-        }
+        if (headingLower.includes(key) || key.includes(headingLower)) { price = val; break; }
       }
     }
 
-    // Label: heading > previous heading > cheap label
     const cleanHeading = heading.replace(/^(GET|POST|PUT|DELETE|PATCH)\s+/i, '').trim();
     let label = cleanHeading || previousHeading || '';
-    // If label is still messy (contains newlines, markdown), fall back to previous heading
     if (label.includes('\n') || label.includes('#')) label = previousHeading || '';
     if (!label) label = path.split('/').filter(Boolean).slice(-2).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(' ');
 
-    // Description: first non-heading, non-price line that's long enough
     const lines = block.split('\n');
     let description = '';
     for (const line of lines) {
@@ -184,23 +187,43 @@ function universalExtract(text, sourceLabel = 'unknown') {
     if (!description) description = label;
 
     candidates.push({
-      path, method,
-      rawPrice: price,
+      path, method, rawPrice: price,
       network: '', asset: '', payTo: '',
-      label,
-      description,
+      label, description,
       source: `universal:md:${sourceLabel}`,
     });
-
     if (heading) previousHeading = heading;
   }
 
-  // -------- Strategy 2: JSON objects --------
+  // ============================================================
+  // NEW: Strategy 2 - Non-standard JSON where keys are endpoints
+  // Matches: { "https://domain.com/path": { ... } }
+  // ============================================================
   try {
     const json = JSON.parse(raw);
     const walk = (obj) => {
       if (!obj || typeof obj !== 'object') return;
       if (Array.isArray(obj)) { obj.forEach(walk); return; }
+      
+      // First, check if keys themselves are URLs (non-standard well-known format)
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof key === 'string' && (key.startsWith('http://') || key.startsWith('https://'))) {
+          const path = normalizePath(key);
+          const meta = value && typeof value === 'object' ? value : {};
+          const price = meta.price || meta.amount || meta.cost || '';
+          const method = meta.method || 'GET';
+          candidates.push({
+            path, method,
+            rawPrice: price ? String(Math.round(parseFloat(String(price).replace(/[^0-9.]/g, '')) * 1_000_000)) : '',
+            network: meta.network || '', asset: meta.asset || '', payTo: meta.payTo || '',
+            label: meta.label || meta.name || meta.id || meta.summary || '',
+            description: meta.description || meta.summary || '',
+            source: `universal:json-key:${sourceLabel}`,
+          });
+        }
+      }
+      
+      // Standard walk: look for objects with path/endpoint/url property
       const path = obj.path || obj.endpoint || obj.url;
       if (path && typeof path === 'string' && path.startsWith('/')) {
         const method = obj.method || 'GET';
@@ -214,6 +237,7 @@ function universalExtract(text, sourceLabel = 'unknown') {
           source: `universal:json:${sourceLabel}`,
         });
       }
+      
       Object.values(obj).forEach(walk);
     };
     walk(json);
@@ -224,7 +248,6 @@ function universalExtract(text, sourceLabel = 'unknown') {
   for (const match of htmlPathMatches) {
     const path = match[1];
     if (!path.startsWith('/')) continue;
-    // Quick noise filter for HTML strategy
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
     if (path.includes('/_next/') || path.includes('/static/')) continue;
 
@@ -330,16 +353,12 @@ async function scrapeStaticPages(base, timeout) {
     maxRequestsPerCrawl: 20,
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
     async requestHandler({ request, response, $, enqueueLinks }) {
-      // Check content type to decide how to handle the response
       const contentType = response?.headers?.['content-type'] || '';
       
-      // If response is not HTML, try to parse it as JSON or plain text for endpoints
       if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
         try {
-          // For JSON responses, try to extract endpoints directly
           const bodyText = String(response?.body || '');
           if (bodyText) {
-            // Send directly to universal extraction
             const extracted = universalExtract(bodyText, `scraper:${request.url}`);
             if (extracted.length > 0) {
               discovered.set(request.url, { url: request.url, html: bodyText });
@@ -347,14 +366,10 @@ async function scrapeStaticPages(base, timeout) {
               return;
             }
           }
-        } catch (err) {
-          console.log(`[SCRAPER] Error handling non-HTML response: ${err.message}`);
-        }
-        // If we couldn't extract anything, don't try Cheerio parsing
+        } catch (err) { console.log(`[SCRAPER] Error handling non-HTML response: ${err.message}`); }
         return;
       }
       
-      // Handle HTML responses with Cheerio
       try {
         const bodyText = $('body').text().toLowerCase();
         const matched = keywords.filter((kw) => bodyText.includes(kw));
@@ -378,7 +393,6 @@ async function scrapeStaticPages(base, timeout) {
           },
         });
       } catch (err) {
-        // If Cheerio parsing fails, try extracting from raw body
         console.log(`[SCRAPER] Cheerio parsing failed for ${request.url}: ${err.message}`);
         try {
           const bodyText = String(response?.body || '');
@@ -389,9 +403,7 @@ async function scrapeStaticPages(base, timeout) {
               console.log(`[SCRAPER] Extracted endpoints from raw body: ${request.url}`);
             }
           }
-        } catch (rawErr) {
-          console.log(`[SCRAPER] Failed to extract from raw body: ${rawErr.message}`);
-        }
+        } catch (rawErr) { console.log(`[SCRAPER] Failed to extract from raw body: ${rawErr.message}`); }
       }
     },
   });
@@ -540,7 +552,6 @@ if (!domain) { await Actor.fail('Domain is required.'); await Actor.exit(); }
 
 domain = domain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').replace(/\/+$/, '').trim();
 
-// Build target domains list. For .workers.dev domains, don't add "api." subdomain.
 const targetDomains = [domain];
 if (includeSubdomains) {
   const lowerDomain = domain.toLowerCase();
