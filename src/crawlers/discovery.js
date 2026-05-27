@@ -112,14 +112,27 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
   console.log(`\n[HARVESTER] Searching for '${targetDomain}' map on x402scan.com via tRPC API...`);
   const discoveredPaths = [];
 
+  // Headers penyamaran agar kita terlihat seperti browser asli
+  const fakeHeaders = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json',
+    'Referer': 'https://www.x402scan.com/',
+    'Origin': 'https://www.x402scan.com'
+  };
+
   try {
     // 1. Fetch the list of all servers from the tRPC API
-    const listUrl = `https://www.x402scan.com/api/trpc/public.server.list?input=${encodeURIComponent('{"json":{}}' )}`;
-    const listResponse = await got(listUrl, { timeout: { request: timeout }, throwHttpErrors: false });
+    const listUrl = `https://www.x402scan.com/api/trpc/public.server.list?batch=1&input=${encodeURIComponent('{"0":{"json":{}}}' )}`;
+    const listResponse = await got(listUrl, { 
+      headers: fakeHeaders,
+      timeout: { request: timeout }, 
+      throwHttpErrors: false 
+    });
     
     if (listResponse.statusCode === 200 && listResponse.body) {
       const listData = JSON.parse(listResponse.body);
-      const servers = listData?.result?.data?.json || [];
+      // tRPC batch response usually returns an array
+      const servers = listData[0]?.result?.data?.json || [];
       
       // 2. Find the server whose URL matches our target domain
       const targetServer = servers.find(s => s.url && s.url.toLowerCase().includes(targetDomain.toLowerCase()));
@@ -128,12 +141,16 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         console.log(`[HARVESTER] Target found! Server ID: ${targetServer.id}`);
         
         // 3. Fetch endpoint details for that specific server via tRPC API
-        const detailUrl = `https://www.x402scan.com/api/trpc/public.server.get?input=${encodeURIComponent(`{"json":{"id":"${targetServer.id}"}}` )}`;
-        const detailResponse = await got(detailUrl, { timeout: { request: timeout }, throwHttpErrors: false });
+        const detailUrl = `https://www.x402scan.com/api/trpc/public.server.get?batch=1&input=${encodeURIComponent(`{"0":{"json":{"id":"${targetServer.id}"}}}` )}`;
+        const detailResponse = await got(detailUrl, { 
+          headers: fakeHeaders,
+          timeout: { request: timeout }, 
+          throwHttpErrors: false 
+        });
         
         if (detailResponse.statusCode === 200 && detailResponse.body) {
           const detailData = JSON.parse(detailResponse.body);
-          const resources = detailData?.result?.data?.json?.resources || [];
+          const resources = detailData[0]?.result?.data?.json?.resources || [];
           
           console.log(`[HARVESTER] Found ${resources.length} resources in the API!`);
           
@@ -151,9 +168,11 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
       } else {
         console.log(`[HARVESTER] Target '${targetDomain}' not found in the x402scan server list.`);
       }
+    } else {
+      console.log(`[HARVESTER] API rejected request. Status: ${listResponse.statusCode}`);
     }
   } catch (e) {
-    console.log(`[HARVESTER] Failed to access tRPC API: ${e.message}`);
+    console.log(`[HARVESTER] Failed to access ${e.message}`);
   }
 
   if (discoveredPaths.length > 0) {
