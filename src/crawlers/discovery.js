@@ -101,7 +101,77 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
       }
     },
   });
+
   
   await crawler.run(startUrls);
   return [...discovered.values()];
 }
+
+// ============================================================
+// THE HARVESTER: Platform-Specific Directory Scraper
+// ============================================================
+export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
+  console.log(`\n[HARVESTER] Mencari peta '${targetDomain}' di x402scan.com...`);
+  const discoveredPaths = [];
+
+  const crawler = new CheerioCrawler({
+    maxRequestsPerCrawl: 20, // Batasi agar tidak terlalu lama
+    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
+    proxyConfiguration,
+    async requestHandler({ request, $, enqueueLinks }) {
+      const url = request.url;
+
+      // 1. Jika di halaman utama, cari semua link yang menuju ke halaman /server/
+      if (url === 'https://www.x402scan.com/' || url === 'https://x402scan.com/' ) {
+        await enqueueLinks({
+          selector: 'a[href*="/server/"]',
+          baseUrl: 'https://www.x402scan.com',
+        } );
+        return;
+      }
+
+      // 2. Jika masuk ke halaman detail server
+      if (url.includes('/server/')) {
+        const pageText = $('body').text();
+        
+        // Cek apakah halaman ini benar-benar milik domain target kita
+        if (pageText.toLowerCase().includes(targetDomain.toLowerCase())) {
+          console.log(`[HARVESTER] Target ditemukan di direktori: ${url}`);
+          
+          // Ekstrak semua path (misal: POST /api/v1/chat) dari halaman direktori
+          const pathMatches = pageText.match(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-zA-Z0-9_/\-{}.:]+)/gi);
+          
+          if (pathMatches) {
+            for (const match of pathMatches) {
+              const parts = match.trim().split(/\s+/);
+              if (parts.length >= 2) {
+                discoveredPaths.push({
+                  method: parts[0].toUpperCase(),
+                  path: parts[1],
+                  source: 'harvester:x402scan'
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+  });
+
+  try {
+    // Mulai pencarian dari halaman depan direktori
+    await crawler.run(['https://www.x402scan.com/'] );
+  } catch (err) {
+    console.log(`[HARVESTER] Gagal mengakses direktori: ${err.message}`);
+  }
+
+  if (discoveredPaths.length > 0) {
+    console.log(`[HARVESTER] Berhasil memanen ${discoveredPaths.length} path dari direktori!`);
+  } else {
+    console.log(`[HARVESTER] Target tidak ditemukan di direktori, atau tidak ada path.`);
+  }
+
+  return discoveredPaths;
+}
+
+
