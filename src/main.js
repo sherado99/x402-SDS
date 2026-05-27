@@ -36,15 +36,25 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // 2. SCRAPER (Gabungan Dictionary + Manual Paths dari UI)
+  import { guessPathsWithWorker } from './utils/ai.js';
+
+// ... di dalam fungsi runPipelineForDomain ...
+
+  // 2. SCRAPER (Gabungan Dictionary + Manual Paths + AI Guesser)
   let pathsToScrape = [];
   if (manualPathsArray && manualPathsArray.length > 0) {
     pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
   } else {
-    pathsToScrape = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} dictionary paths`);
+    // PANGGIL WORKER ANDA DI SINI
+    const aiPaths = await guessPathsWithWorker(base);
+    
+    // Gabungkan tebakan AI dengan Dictionary bawaan
+    const combinedPaths = [...aiPaths, ...BUILT_IN_DICTIONARY];
+    
+    pathsToScrape = combinedPaths.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-and-ai' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${aiPaths.length} from AI)`);
   }
+
   
   const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
 
