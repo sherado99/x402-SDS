@@ -106,78 +106,58 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
 }
 
 // ============================================================
-// THE HARVESTER: Platform-Specific Directory Scraper (UPGRADED)
+// THE HARVESTER: tRPC API Scraper (Fast & Cost-Effective)
 // ============================================================
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
-  console.log(`\n[HARVESTER] Searching map '${targetDomain}' at x402scan.com via Sitemap...`);
+  console.log(`\n[HARVESTER] Searching for '${targetDomain}' map on x402scan.com via tRPC API...`);
   const discoveredPaths = [];
-  let serverUrls = [];
 
-  // 1. Ambil semua link dari Sitemap secara instan (Bypass JavaScript)
   try {
-    const sitemapResponse = await got('https://x402scan.com/sitemap.xml', { timeout: { request: timeout }, throwHttpErrors: false } );
-    if (sitemapResponse.body) {
-      const matches = sitemapResponse.body.match(/<loc>(https:\/\/[^<]*x402scan\.com\/server\/[^<]+ )<\/loc>/gi);
-      if (matches) {
-        serverUrls = matches.map(m => m.replace(/<\/?loc>/g, ''));
-      }
-    }
-  } catch (e) {
-    console.log(`[HARVESTER] Fail take sitemap: ${e.message}`);
-  }
-
-  // Jika sitemap gagal, gunakan halaman depan sebagai cadangan
-  if (serverUrls.length === 0) {
-    serverUrls = ['https://www.x402scan.com/'];
-  } else {
-    console.log(`[HARVESTER] Find ${serverUrls.length} link server in sitemap. Start inspection...` );
-  }
-
-  const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 500, // Dinaikkan agar bisa mengecek semua server di sitemap
-    requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
-    proxyConfiguration,
-    async requestHandler({ request, $ }) {
-      const url = request.url;
-
-      if (url.includes('/server/')) {
-        // X-RAY VISION: Ambil seluruh HTML mentah, termasuk data JSON yang disembunyikan React
-        const pageText = $.html(); 
+    // 1. Fetch the list of all servers from the tRPC API
+    const listUrl = `https://www.x402scan.com/api/trpc/public.server.list?input=${encodeURIComponent('{"json":{}}' )}`;
+    const listResponse = await got(listUrl, { timeout: { request: timeout }, throwHttpErrors: false });
+    
+    if (listResponse.statusCode === 200 && listResponse.body) {
+      const listData = JSON.parse(listResponse.body);
+      const servers = listData?.result?.data?.json || [];
+      
+      // 2. Find the server whose URL matches our target domain
+      const targetServer = servers.find(s => s.url && s.url.toLowerCase().includes(targetDomain.toLowerCase()));
+      
+      if (targetServer && targetServer.id) {
+        console.log(`[HARVESTER] Target found! Server ID: ${targetServer.id}`);
         
-        // Cek apakah halaman ini milik domain target kita
-        if (pageText.toLowerCase().includes(targetDomain.toLowerCase())) {
-          console.log(`[HARVESTER] Target ditemukan di direktori: ${url}`);
+        // 3. Fetch endpoint details for that specific server via tRPC API
+        const detailUrl = `https://www.x402scan.com/api/trpc/public.server.get?input=${encodeURIComponent(`{"json":{"id":"${targetServer.id}"}}` )}`;
+        const detailResponse = await got(detailUrl, { timeout: { request: timeout }, throwHttpErrors: false });
+        
+        if (detailResponse.statusCode === 200 && detailResponse.body) {
+          const detailData = JSON.parse(detailResponse.body);
+          const resources = detailData?.result?.data?.json?.resources || [];
           
-          // Ekstrak semua path (misal: POST /api/v1/chat) dari HTML/JSON mentah
-          const pathMatches = pageText.match(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-zA-Z0-9_/\-{}.:]+)/gi);
+          console.log(`[HARVESTER] Found ${resources.length} resources in the API!`);
           
-          if (pathMatches) {
-            for (const match of pathMatches) {
-              const parts = match.trim().split(/\s+/);
-              if (parts.length >= 2) {
-                discoveredPaths.push({
-                  method: parts[0].toUpperCase(),
-                  path: parts[1],
-                  source: 'harvester:x402scan'
-                });
-              }
+          // 4. Extract the paths
+          for (const res of resources) {
+            if (res.path) {
+              discoveredPaths.push({
+                method: res.method || 'GET',
+                path: res.path,
+                source: 'harvester:x402scan-api'
+              });
             }
           }
         }
+      } else {
+        console.log(`[HARVESTER] Target '${targetDomain}' not found in the x402scan server list.`);
       }
     }
-  });
-
-  try {
-    await crawler.run(serverUrls);
-  } catch (err) {
-    console.log(`[HARVESTER] Fail run crawler at directory: ${err.message}`);
+  } catch (e) {
+    console.log(`[HARVESTER] Failed to access tRPC API: ${e.message}`);
   }
 
   if (discoveredPaths.length > 0) {
-    console.log(`[HARVESTER] Success ${discoveredPaths.length} path form directory!`);
-  } else {
-    console.log(`[HARVESTER] Target not found at directory, or no path.`);
+    console.log(`[HARVESTER] Successfully harvested ${discoveredPaths.length} paths from the directory API!`);
   }
 
   return discoveredPaths;
