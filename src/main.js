@@ -9,7 +9,7 @@ import { parseAllRawData, finalFilter } from './parsers/index.js';
 import { generateDOCX } from './reporters/docx.js';
 import { generatePDF } from './reporters/pdf.js';
 import { saveFileToKVS } from './reporters/storage.js';
-import { guessPathsWithWorker } from './utils/ai.js'; // <--- TARUH DI SINI (PALING ATAS)
+import { crawlAPISources, crawlHTMLPages, crawlDirectoryPlatform } from './crawlers/discovery.js';
 
 function scanResponses(scraped) {
   return scraped.map(({ candidate, statusCode, body, responseTime, error }) => {
@@ -47,7 +47,29 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   } else {
     // KITA BUANG AI. 
     // (Nantinya di sini kita akan memasukkan hasil sedotan dari x402scan.com)
+      // 2. THE HARVESTER (Cari di Direktori x402scan.com)
+  const harvestedPaths = await crawlDirectoryPlatform(base, timeout, proxyConfiguration);
+
+  // 3. SCRAPER (Gabungan Harvester + Manual Paths + Cadangan Dictionary)
+  let pathsToScrape = [];
+  
+  if (manualPathsArray && manualPathsArray.length > 0) {
+    pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
+  } else {
+    // Normalisasi hasil panen dari direktori
+    const cleanHarvested = harvestedPaths.map(p => normalizeCandidate({ path: p.path, method: p.method, source: p.source }));
     
+    // Gabungkan hasil panen dengan Dictionary sebagai cadangan
+    const combinedPaths = [...cleanHarvested, ...BUILT_IN_DICTIONARY.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }))];
+    
+    // Hapus duplikat agar mesin tidak mengetuk pintu yang sama dua kali
+    const uniquePaths = Array.from(new Map(combinedPaths.map(item => [item.path, item])).values());
+    
+    pathsToScrape = uniquePaths.slice(0, maxPaths);
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${cleanHarvested.length} from Harvester, rest from Dictionary Backup)`);
+  }
+
     // Untuk sementara, kita gunakan Dictionary sebagai cadangan penuh
     pathsToScrape = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }));
     console.log(`[SCRAPER] Using ${pathsToScrape.length} paths from Dictionary Backup`);
