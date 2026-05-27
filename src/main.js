@@ -9,6 +9,7 @@ import { parseAllRawData, finalFilter } from './parsers/index.js';
 import { generateDOCX } from './reporters/docx.js';
 import { generatePDF } from './reporters/pdf.js';
 import { saveFileToKVS } from './reporters/storage.js';
+import { guessPathsWithWorker } from './utils/ai.js'; // <--- TARUH DI SINI (PALING ATAS)
 
 function scanResponses(scraped) {
   return scraped.map(({ candidate, statusCode, body, responseTime, error }) => {
@@ -36,17 +37,17 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  import { guessPathsWithWorker } from './utils/ai.js';
-
-// ... di dalam fungsi runPipelineForDomain ...
+  // Gabungkan semua teks HTML yang didapat untuk dibaca oleh AI
+  const combinedTextForAI = allRawContent.map(item => item.content).join('\n\n');
 
   // 2. SCRAPER (Gabungan Dictionary + Manual Paths + AI Guesser)
   let pathsToScrape = [];
   if (manualPathsArray && manualPathsArray.length > 0) {
     pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
   } else {
-    // PANGGIL WORKER ANDA DI SINI
-    const aiPaths = await guessPathsWithWorker(base);
+    // PANGGIL WORKER AI DI SINI (Kirim teks HTML-nya)
+    const aiPaths = await guessPathsWithWorker(combinedTextForAI);
     
     // Gabungkan tebakan AI dengan Dictionary bawaan
     const combinedPaths = [...aiPaths, ...BUILT_IN_DICTIONARY];
