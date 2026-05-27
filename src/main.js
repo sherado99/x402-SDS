@@ -2,14 +2,13 @@
 import { Actor } from 'apify';
 import { DEFAULT_TIMEOUT, DEFAULT_MAX_PATHS, BUILT_IN_DICTIONARY } from './config.js';
 import { normalizePath, normalizeCandidate, sha256 } from './utils/helpers.js';
-import { getProxyAgent } from './utils/proxy.js';
-import { crawlAPISources, crawlHTMLPages } from './crawlers/discovery.js';
+import { getProxyAgent, getProxyConfiguration } from './utils/proxy.js';
+import { crawlAPISources, crawlHTMLPages, crawlDirectoryPlatform } from './crawlers/discovery.js';
 import { scrapeEndpoints } from './crawlers/prober.js';
 import { parseAllRawData, finalFilter } from './parsers/index.js';
 import { generateDOCX } from './reporters/docx.js';
 import { generatePDF } from './reporters/pdf.js';
 import { saveFileToKVS } from './reporters/storage.js';
-import { crawlAPISources, crawlHTMLPages, crawlDirectoryPlatform } from './crawlers/discovery.js';
 
 function scanResponses(scraped) {
   return scraped.map(({ candidate, statusCode, body, responseTime, error }) => {
@@ -37,17 +36,7 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-    // 2. SCRAPER (Target dari Platform + Cadangan Dictionary)
-  let pathsToScrape = [];
-  
-  if (manualPathsArray && manualPathsArray.length > 0) {
-    // Jika ada input manual dari UI
-    pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
-  } else {
-    // KITA BUANG AI. 
-    // (Nantinya di sini kita akan memasukkan hasil sedotan dari x402scan.com)
-      // 2. THE HARVESTER (Cari di Direktori x402scan.com)
+  // 2. THE HARVESTER (Cari di Direktori x402scan.com)
   const harvestedPaths = await crawlDirectoryPlatform(base, timeout, proxyConfiguration);
 
   // 3. SCRAPER (Gabungan Harvester + Manual Paths + Cadangan Dictionary)
@@ -70,24 +59,17 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
     console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${cleanHarvested.length} from Harvester, rest from Dictionary Backup)`);
   }
 
-    // Untuk sementara, kita gunakan Dictionary sebagai cadangan penuh
-    pathsToScrape = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths from Dictionary Backup`);
-  }
-
-
-  
   const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
 
-  // 3. SCANNER
+  // 4. SCANNER
   const scannedData = scanResponses(scrapedData);
   console.log(`[SCANNER] ${scannedData.length} responses scanned`);
 
-  // 4. PARSER
+  // 5. PARSER
   const parsedCandidates = parseAllRawData(allRawContent, scannedData);
   console.log(`[PARSER] ${parsedCandidates.length} total candidates after parsing`);
 
-  // 5. FINAL FILTER
+  // 6. FINAL FILTER
   const final = finalFilter(parsedCandidates, base);
   console.log(`[FINAL] ${final.length} complete endpoints after final filter`);
 
@@ -114,32 +96,29 @@ if (!domain) {
   await Actor.exit(); 
 }
 
-// Parse manual paths dari textarea UI
+// Parse manual paths dari UI
 const manualPathsArray = manualPathsStr
   .split('\n')
   .map(p => p.trim())
-  .filter(p => p.length > 0);
+  .filter(p => p.startsWith('/'));
 
 // Parse domain dan specificPath
 let specificPath = null;
 domain = domain.trim();
-const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
+const urlMatch = domain.match(/^(https?:\/\/ )?([^\/]+)(\/.*)?$/i);
 if (urlMatch) {
   domain = urlMatch[2];
   if (urlMatch[3]) {
     const parsedPath = normalizePath(urlMatch[3]);
-    // PERBAIKAN: Abaikan jika path-nya hanya '/' atau kosong
     if (parsedPath !== '/' && parsedPath !== '') {
       specificPath = parsedPath;
     }
   }
 }
 
-
-// Setup Proxy (Menghormati tombol useResidentialProxy dari UI)
-const proxyAgent = getProxyAgent();
-const proxyConfigOptions = useResidentialProxy ? { groups: ['RESIDENTIAL'] } : undefined;
-const proxyConfiguration = await Actor.createProxyConfiguration(proxyConfigOptions);
+// Setup Proxy
+const proxyAgent = getProxyAgent(useResidentialProxy);
+const proxyConfiguration = await getProxyConfiguration(useResidentialProxy);
 
 const allResults = [];
 
@@ -148,32 +127,26 @@ if (specificPath) {
   allResults.push(...final);
 } else {
   const targetDomains = [domain];
-  
-  // Menghormati tombol includeSubdomains dari UI
-  if (includeSubdomains) {
-    const lowerDomain = domain.toLowerCase();
-    if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
-      targetDomains.push(`api.${domain}`);
-    }
+  const lowerDomain = domain.toLowerCase();
+  if (includeSubdomains && !lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
+    targetDomains.push(`api.${domain}`);
   }
-
   for (const base of targetDomains) {
     const final = await runPipelineForDomain(base, null, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
     allResults.push(...final);
   }
 }
 
-// Generate Reports
+// ============================================================
+// OUTPUT
+// ============================================================
 const finalResults = allResults.map(row => ({ ...row, domain, download_docx: '', download_pdf: '' }));
 const docxBuffer = await generateDOCX(domain, finalResults);
 const pdfBuffer  = await generatePDF(domain, finalResults);
-
-const docxUrl = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-const pdfUrl  = await saveFileToKVS('OUTPUT.pdf',  pdfBuffer,  'application/pdf');
-
-const output = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
+const docxUrl    = await saveFileToKVS('OUTPUT.docx', docxBuffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+const pdfUrl     = await saveFileToKVS('OUTPUT.pdf',  pdfBuffer,  'application/pdf');
+const output     = finalResults.map(row => ({ ...row, download_docx: docxUrl, download_pdf: pdfUrl }));
 
 await Actor.pushData(output);
 console.log(`\nScan complete. ${output.length} endpoints found.`);
-
 await Actor.exit();
