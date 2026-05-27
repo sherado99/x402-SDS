@@ -46,8 +46,17 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
     pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
     console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
   } else {
-    // Normalisasi hasil panen dari direktori
-    const cleanHarvested = harvestedPaths.map(p => normalizeCandidate({ path: p.path, method: p.method, source: p.source }));
+    // Normalisasi hasil panen dari direktori (Bawa semua datanya!)
+    const cleanHarvested = harvestedPaths.map(p => normalizeCandidate({ 
+      path: p.path, 
+      method: p.method, 
+      rawPrice: p.rawPrice,
+      label: p.label,
+      description: p.description,
+      network: p.network,
+      asset: p.asset,
+      source: p.source 
+    }));
     
     // Gabungkan hasil panen dengan Dictionary sebagai cadangan
     const combinedPaths = [...cleanHarvested, ...BUILT_IN_DICTIONARY.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }))];
