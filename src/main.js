@@ -37,24 +37,22 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // Gabungkan semua teks HTML yang didapat untuk dibaca oleh AI
-  const combinedTextForAI = allRawContent.map(item => item.content).join('\n\n');
-
-  // 2. SCRAPER (Gabungan Dictionary + Manual Paths + AI Guesser)
+    // 2. SCRAPER (Target dari Platform + Cadangan Dictionary)
   let pathsToScrape = [];
+  
   if (manualPathsArray && manualPathsArray.length > 0) {
+    // Jika ada input manual dari UI
     pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
     console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
   } else {
-    // PANGGIL WORKER AI DI SINI (Kirim teks HTML-nya)
-    const aiPaths = await guessPathsWithWorker(combinedTextForAI);
+    // KITA BUANG AI. 
+    // (Nantinya di sini kita akan memasukkan hasil sedotan dari x402scan.com)
     
-    // Gabungkan tebakan AI dengan Dictionary bawaan
-    const combinedPaths = [...aiPaths, ...BUILT_IN_DICTIONARY];
-    
-    pathsToScrape = combinedPaths.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-and-ai' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${aiPaths.length} from AI)`);
+    // Untuk sementara, kita gunakan Dictionary sebagai cadangan penuh
+    pathsToScrape = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }));
+    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths from Dictionary Backup`);
   }
+
 
   
   const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
