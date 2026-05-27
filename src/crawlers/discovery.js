@@ -154,30 +154,18 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
           
           console.log(`[HARVESTER] Found ${resources.length} resources in the API!`);
           
-          // 4. Extract the paths
+          // 4. Extract the paths beserta HARGA dan DESKRIPSI
           for (const res of resources) {
             if (res.path) {
               discoveredPaths.push({
                 method: res.method || 'GET',
                 path: res.path,
+                rawPrice: res.price ? String(res.price) : '',
+                label: res.name || res.label || res.title || '',
+                description: res.description || '',
+                network: res.network || '',
+                asset: res.asset || '',
                 source: 'harvester:x402scan-api'
               });
             }
           }
-        }
-      } else {
-        console.log(`[HARVESTER] Target '${targetDomain}' not found in the x402scan server list.`);
-      }
-    } else {
-      console.log(`[HARVESTER] API rejected request. Status: ${listResponse.statusCode}`);
-    }
-  } catch (e) {
-    console.log(`[HARVESTER] Failed to access ${e.message}`);
-  }
-
-  if (discoveredPaths.length > 0) {
-    console.log(`[HARVESTER] Successfully harvested ${discoveredPaths.length} paths from the directory API!`);
-  }
-
-  return discoveredPaths;
-}
