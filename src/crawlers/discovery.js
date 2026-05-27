@@ -36,7 +36,6 @@ export async function crawlAPISources(base, timeout, proxyAgent) {
     { url: `https://${base}/llms.txt`,                        label: 'llms.txt' },
     { url: `https://${base}/.well-known/mcp.json`,            label: 'mcp.json' },
     { url: `https://${base}/api-docs.json`,                   label: 'api-docs' },
-    // TAMBAHKAN BARIS INI UNTUK MENANGKAP API INTERNAL BLOCKRUN:
     { url: `https://${base}/api/models`,                      label: 'api-models' },
     { url: `https://${base}/api/services`,                    label: 'api-services' },
   ];
@@ -66,7 +65,7 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
   const crawler = new CheerioCrawler({
     maxRequestsPerCrawl: 20,
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
-    proxyConfiguration, // Menggunakan proxy bawaan Apify
+    proxyConfiguration,
     async requestHandler({ request, response, $, enqueueLinks }) {
       const contentType = response?.headers?.['content-type'] || '';
       if (!contentType.includes('text/html') && !contentType.includes('application/xhtml')) {
@@ -102,43 +101,54 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
     },
   });
 
-  
   await crawler.run(startUrls);
   return [...discovered.values()];
 }
 
 // ============================================================
-// THE HARVESTER: Platform-Specific Directory Scraper
+// THE HARVESTER: Platform-Specific Directory Scraper (UPGRADED)
 // ============================================================
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
-  console.log(`\n[HARVESTER] Mencari peta '${targetDomain}' di x402scan.com...`);
+  console.log(`\n[HARVESTER] Searching map '${targetDomain}' at x402scan.com via Sitemap...`);
   const discoveredPaths = [];
+  let serverUrls = [];
+
+  // 1. Ambil semua link dari Sitemap secara instan (Bypass JavaScript)
+  try {
+    const sitemapResponse = await got('https://x402scan.com/sitemap.xml', { timeout: { request: timeout }, throwHttpErrors: false } );
+    if (sitemapResponse.body) {
+      const matches = sitemapResponse.body.match(/<loc>(https:\/\/[^<]*x402scan\.com\/server\/[^<]+ )<\/loc>/gi);
+      if (matches) {
+        serverUrls = matches.map(m => m.replace(/<\/?loc>/g, ''));
+      }
+    }
+  } catch (e) {
+    console.log(`[HARVESTER] Fail take sitemap: ${e.message}`);
+  }
+
+  // Jika sitemap gagal, gunakan halaman depan sebagai cadangan
+  if (serverUrls.length === 0) {
+    serverUrls = ['https://www.x402scan.com/'];
+  } else {
+    console.log(`[HARVESTER] Find ${serverUrls.length} link server in sitemap. Start inspection...` );
+  }
 
   const crawler = new CheerioCrawler({
-    maxRequestsPerCrawl: 20, // Batasi agar tidak terlalu lama
+    maxRequestsPerCrawl: 500, // Dinaikkan agar bisa mengecek semua server di sitemap
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 5,
     proxyConfiguration,
-    async requestHandler({ request, $, enqueueLinks }) {
+    async requestHandler({ request, $ }) {
       const url = request.url;
 
-      // 1. Jika di halaman utama, cari semua link yang menuju ke halaman /server/
-      if (url === 'https://www.x402scan.com/' || url === 'https://x402scan.com/' ) {
-        await enqueueLinks({
-          selector: 'a[href*="/server/"]',
-          baseUrl: 'https://www.x402scan.com',
-        } );
-        return;
-      }
-
-      // 2. Jika masuk ke halaman detail server
       if (url.includes('/server/')) {
-        const pageText = $('body').text();
+        // X-RAY VISION: Ambil seluruh HTML mentah, termasuk data JSON yang disembunyikan React
+        const pageText = $.html(); 
         
-        // Cek apakah halaman ini benar-benar milik domain target kita
+        // Cek apakah halaman ini milik domain target kita
         if (pageText.toLowerCase().includes(targetDomain.toLowerCase())) {
           console.log(`[HARVESTER] Target ditemukan di direktori: ${url}`);
           
-          // Ekstrak semua path (misal: POST /api/v1/chat) dari halaman direktori
+          // Ekstrak semua path (misal: POST /api/v1/chat) dari HTML/JSON mentah
           const pathMatches = pageText.match(/(GET|POST|PUT|DELETE|PATCH)\s+(\/[a-zA-Z0-9_/\-{}.:]+)/gi);
           
           if (pathMatches) {
@@ -159,19 +169,16 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
   });
 
   try {
-    // Mulai pencarian dari halaman depan direktori
-    await crawler.run(['https://www.x402scan.com/'] );
+    await crawler.run(serverUrls);
   } catch (err) {
-    console.log(`[HARVESTER] Gagal mengakses direktori: ${err.message}`);
+    console.log(`[HARVESTER] Fail run crawler at directory: ${err.message}`);
   }
 
   if (discoveredPaths.length > 0) {
-    console.log(`[HARVESTER] Berhasil memanen ${discoveredPaths.length} path dari direktori!`);
+    console.log(`[HARVESTER] Success ${discoveredPaths.length} path form directory!`);
   } else {
-    console.log(`[HARVESTER] Target tidak ditemukan di direktori, atau tidak ada path.`);
+    console.log(`[HARVESTER] Target not found at directory, or no path.`);
   }
 
   return discoveredPaths;
 }
-
-
