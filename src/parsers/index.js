@@ -116,7 +116,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
 export function finalFilter(parsedCandidates, domain) {
   return parsedCandidates
-    .filter(c => c.path && c.rawPrice && c.label && c.description && c.description.length > 10)
+    .filter(c => c.path && c.rawPrice && c.description && c.description.length > 10)
     .map(c => ({
       domain,
       path: c.path,
@@ -130,9 +130,11 @@ export function finalFilter(parsedCandidates, domain) {
       description: c.description || '',
       source: c.source || 'unknown',
       auditHash: c.auditHash || '',
-      httpStatus: c.httpStatus ? String(c.httpStatus) : '',
+      httpStatus: c.httpStatus ? String(c.httpStatus) : 'unknown',
       responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
       errorMessage: c.errorMessage || '',
       timestamp: new Date().toISOString(),
+      download_docx: '',
+      download_pdf: ''
     }));
 }
