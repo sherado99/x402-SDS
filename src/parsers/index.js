@@ -74,20 +74,24 @@ export function parseAllRawData(rawPaths, scrapedData) {
     const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
 
-    if (statusCode === 402) {
+        if (statusCode === 402) {
       try {
         const json = JSON.parse(body);
         if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
           const offer = json.accepts[0];
+          
+          // Ambil deskripsi dari resource.description (X402 v2) atau offer.description (v1)
+          const desc = (json.resource && json.resource.description) ? json.resource.description : (offer.description || candidate.description || '');
+          
           candidates.push(normalizeCandidate({
             path,
             method: candidate.method || 'GET',
-            rawPrice: String(offer.maxAmountRequired || offer.amount || ''),
+            rawPrice: String(offer.amount || offer.maxAmountRequired || ''), // Mendukung v2 (amount) dan v1
             network: offer.network || candidate.network || '',
             asset: offer.asset || candidate.asset || '',
             payTo: offer.payTo || candidate.payTo || '',
-            label: offer.label || candidate.label || '',
-            description: offer.description || candidate.description || '',
+            label: desc || candidate.label || '',
+            description: desc,
             source: 'scraper:402',
             httpStatus: statusCode,
             auditHash: bodyHash,
@@ -98,6 +102,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
         }
       } catch { /* not JSON */ }
     }
+
 
     const extracted = universalExtract(body, `scraper:${path}`);
     const cleaned = smartRouter(extracted, 'scraper');
