@@ -1,6 +1,6 @@
 // src/config.js
 
-export const DEFAULT_TIMEOUT     = 5000;
+export const DEFAULT_TIMEOUT     = 15000;
 export const DEFAULT_MAX_PATHS   = 100;
 export const DEFAULT_CONCURRENCY = 8;
 
@@ -13,4 +13,3 @@ export const BUILT_IN_DICTIONARY = [
   '/api/x402/', '/api/x402/payment', '/api/x402/status', '/api/x402/webhook',
   '/v1/x402', '/v1/x402/payment', '/v2/x402', '/.well-known/x402',
 ];
-
