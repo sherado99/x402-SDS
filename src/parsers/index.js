@@ -14,28 +14,28 @@ function smartRouter(candidates, sourceLabel) {
     // Validasi path: hanya boleh karakter standar
     if (!/^\/[a-zA-Z0-9_\/.-]+$/.test(cleanPath)) continue;
     if (cleanPath.length < 2 || cleanPath.length > 300) continue;
-    
+
     let cleanLabel = cleanText(candidate.label || '');
     let cleanDesc = cleanText(candidate.description || '');
-    
+
     // Abaikan label/deskripsi yang mengandung noise instruksi MCP
     if (cleanLabel.includes('mcp__agentcash') || cleanLabel.includes('call mcp') ||
         cleanDesc.includes('mcp__agentcash') || cleanDesc.includes('call mcp')) {
       continue;
     }
-    
+
     const markdownRegex = /^(\*\*|`|_)?(GET|POST|PUT|DELETE|PATCH)\s+[^*-]+(\*\*|`|_)?\s*[-—:]\s*/i;
     cleanLabel = cleanLabel.replace(markdownRegex, '').trim();
     cleanDesc = cleanDesc.replace(markdownRegex, '').trim();
 
     if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
     if (!cleanDesc) cleanDesc = cleanLabel;
-    
+
     // Filter sumber: harus punya harga untuk sumber tertentu
     if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
       if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
     }
-    
+
     cleaned.push({ 
       ...candidate, 
       path: cleanPath, 
@@ -74,7 +74,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
     const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
 
-        if (statusCode === 402) {
+    if (statusCode === 402) {
       try {
         const json = JSON.parse(body);
         if (json.accepts && Array.isArray(json.accepts) && json.accepts.length > 0) {
@@ -83,6 +83,9 @@ export function parseAllRawData(rawPaths, scrapedData) {
           // Ambil deskripsi dari resource.description (X402 v2) atau offer.description (v1)
           const desc = (json.resource && json.resource.description) ? json.resource.description : (offer.description || candidate.description || '');
           
+          // DETEKSI VERSI OTOMATIS: Ambil dari JSON, jika tidak ada anggap versi 1
+          const detectedVersion = json.x402Version ? String(json.x402Version) : '1';
+
           candidates.push(normalizeCandidate({
             path,
             method: candidate.method || 'GET',
@@ -96,13 +99,13 @@ export function parseAllRawData(rawPaths, scrapedData) {
             httpStatus: statusCode,
             auditHash: bodyHash,
             responseTimeMs: responseTime,
-            errorMessage: errorMessage
+            errorMessage: errorMessage,
+            x402Version: detectedVersion // <-- VERSI OTOMATIS DIMASUKKAN DI SINI
           }));
           continue;
         }
       } catch { /* not JSON */ }
     }
-
 
     const extracted = universalExtract(body, `scraper:${path}`);
     const cleaned = smartRouter(extracted, 'scraper');
@@ -125,7 +128,7 @@ export function finalFilter(parsedCandidates, domain) {
     .map(c => ({
       domain,
       path: c.path,
-      x402Version: '',
+      x402Version: c.x402Version || '', // <-- PASTIKAN VERSI DITERUSKAN KE OUTPUT AKHIR
       price: c.rawPrice || '',
       priceReadable: c.rawPrice ? `$${(parseInt(c.rawPrice, 10) / 1_000_000).toFixed(6)}` : '',
       network: c.network || '',
