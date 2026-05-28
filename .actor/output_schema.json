@@ -14,11 +14,11 @@
       "title": "Path",
       "template": "{{path}}"
     },
-    "status": {
+    "httpStatus": {
       "type": "string",
-      "description": "HTTP status code returned by the endpoint, or 'unknown' if not probed.",
-      "title": "Status",
-      "template": "{{status}}"
+      "description": "HTTP status code returned by the endpoint.",
+      "title": "HTTP Status",
+      "template": "{{httpStatus}}"
     },
     "x402Version": {
       "type": "string",
@@ -80,12 +80,6 @@
       "title": "Audit Hash",
       "template": "{{auditHash}}"
     },
-    "httpStatus": {
-      "type": "string",
-      "description": "HTTP status code returned by the endpoint.",
-      "title": "HTTP Status",
-      "template": "{{httpStatus}}"
-    },
     "responseTimeMs": {
       "type": "string",
       "description": "Response time in milliseconds.",
@@ -117,5 +111,5 @@
       "template": "{{download_pdf}}"
     }
   },
-  "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
+  "required": ["domain", "path", "httpStatus", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
 }
