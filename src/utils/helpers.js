@@ -8,7 +8,7 @@ export function sha256(raw) {
 export function normalizePath(rawPath) {
   let p = String(rawPath || '').trim();
   if (!p) return '';
-  
+
   if (p.startsWith('http://') || p.startsWith('https://')) {
     try { 
       const url = new URL(p); 
@@ -17,30 +17,31 @@ export function normalizePath(rawPath) {
       return '/'; 
     }
   }
-  
+
   // Bersihkan: hanya gabungkan slash ganda dan hapus trailing slash
   p = p.replace(/\/+/g, '/').replace(/\/+$/, '');
-  
+
   if (!p.startsWith('/')) p = `/${p}`;
-  
+
   return p.toLowerCase();
 }
 
 export function normalizeCandidate(raw = {}) {
   return {
-    path:        normalizePath(raw.path || raw.endpoint || raw.url || ''),
-    method:      String(raw.method || 'GET').toUpperCase(),
-    rawPrice:    String(raw.rawPrice || raw.price || raw.amount || ''),
-    network:     String(raw.network || ''),
-    asset:       String(raw.asset || ''),
-    payTo:       String(raw.payTo || ''),
-    label:       String(raw.label || raw.name || ''),
-    description: String(raw.description || ''),
-    source:      String(raw.source || 'unknown'),
+    path:           normalizePath(raw.path || raw.endpoint || raw.url || ''),
+    method:         String(raw.method || 'GET').toUpperCase(),
+    rawPrice:       String(raw.rawPrice || raw.price || raw.amount || ''),
+    network:        String(raw.network || ''),
+    asset:          String(raw.asset || ''),
+    payTo:          String(raw.payTo || ''),
+    label:          String(raw.label || raw.name || ''),
+    description:    String(raw.description || ''),
+    source:         String(raw.source || 'unknown'),
     httpStatus:     raw.httpStatus || '',
     auditHash:      raw.auditHash || '',
     responseTimeMs: raw.responseTimeMs || '',
-    errorMessage:   raw.errorMessage || ''
+    errorMessage:   raw.errorMessage || '',
+    x402Version:    String(raw.x402Version || '') // <-- VERSI X402 DITAMBAHKAN DI SINI
   };
 }
 
