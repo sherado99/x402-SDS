@@ -38,7 +38,7 @@ Discovering X402 endpoints manually is a tedious and highly technical process. T
 
 SDS automates this entire pipeline in seconds. 
 
-You simply provide a domain (e.g., `orbisapi.com`), and SDS will intelligently harvest the paths, probe the endpoints, decode the Base64 headers, and hand you a clean, professional PDF report containing the exact price, asset (e.g., USDC), and wallet address for every API on that domain.
+You simply provide a domain (e.g., `stech-api.sheradogilang.workers.dev`), and SDS will intelligently harvest the paths, probe the endpoints, decode the Base64 headers, and hand you a clean, professional PDF report containing the exact price, asset (e.g., USDC), and wallet address for every API on that domain.
 
 ### ⚙️ Two Ways to Use SDS
 | As a Standalone Tool | As a Workflow Component |
