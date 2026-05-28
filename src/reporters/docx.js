@@ -12,7 +12,8 @@ export async function generateDOCX(domain, results) {
     children.push(new Paragraph({ text: 'No public X402 information found on this domain.', spacing: { after: 120 } }));
   } else {
     for (const row of results) {
-      children.push(new Paragraph({ text: `${row.path} [${row.status}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
+      // FIXED: Menggunakan row.httpStatus agar tidak muncul [undefined]
+      children.push(new Paragraph({ text: `${row.path} [${row.httpStatus}]`, heading: HeadingLevel.HEADING_2, spacing: { before: 160, after: 60 } }));
       if (row.priceReadable) children.push(new Paragraph({ text: `Price: ${row.priceReadable} | Network: ${row.network}`, spacing: { after: 40 } }));
       if (row.label) children.push(new Paragraph({ text: `Label: ${row.label}`, spacing: { after: 40 } }));
       if (row.asset) children.push(new Paragraph({ text: `Asset: ${row.asset}`, spacing: { after: 40 } }));
