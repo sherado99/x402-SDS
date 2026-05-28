@@ -4,13 +4,13 @@ import { normalizePath } from '../utils/helpers.js';
 
 export async function scrapeEndpoints(base, candidates, timeout, proxyConfiguration) {
   const scraped = [];
-  
-  // Menyiapkan daftar request dari candidates
+
+  // Prepare request list from candidates
   const requests = candidates.map(item => {
     const path = normalizePath(item.path);
     return {
       url: `https://${base}${path}`,
-      userData: { candidate: item, start: Date.now( ) },
+      userData: { candidate: item, start: Date.now() },
       method: String(item.method || 'GET').toUpperCase(),
     };
   });
@@ -18,11 +18,13 @@ export async function scrapeEndpoints(base, candidates, timeout, proxyConfigurat
   const crawler = new BasicCrawler({
     requestHandlerTimeoutSecs: Math.ceil(timeout / 1000) + 2,
     maxConcurrency: 8,
-    // HAPUS proxyConfiguration dari sini
+    maxRequestRetries: 0, // Prevent hanging by disabling retries
     async requestHandler({ request, sendRequest }) {
       const { candidate, start } = request.userData;
+      console.log(`[PROBER] Fetching: ${request.method} ${request.url}`);
+      
       try {
-        // Ambil URL proxy secara dinamis jika proxyConfiguration tersedia
+        // Dynamically get proxy URL if configuration is available
         const proxyUrl = proxyConfiguration ? await proxyConfiguration.newUrl() : undefined;
 
         const response = await sendRequest({
@@ -30,10 +32,12 @@ export async function scrapeEndpoints(base, candidates, timeout, proxyConfigurat
           method: request.method,
           timeout: { request: timeout },
           throwHttpErrors: false,
-          proxyUrl: proxyUrl, // Masukkan proxy di sini
+          proxyUrl: proxyUrl,
           headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ApifyBot/1.0)', Accept: '*/*' }
         });
-        
+
+        console.log(`[PROBER] Done: ${request.method} ${request.url} -> Status: ${response.statusCode}`);
+
         scraped.push({
           candidate,
           statusCode: response.statusCode,
@@ -42,6 +46,7 @@ export async function scrapeEndpoints(base, candidates, timeout, proxyConfigurat
           error: null,
         });
       } catch (err) {
+        console.log(`[PROBER] Error: ${request.method} ${request.url} -> ${err.message}`);
         scraped.push({
           candidate,
           statusCode: 0,
@@ -53,6 +58,7 @@ export async function scrapeEndpoints(base, candidates, timeout, proxyConfigurat
     },
     async failedRequestHandler({ request, error }) {
       const { candidate, start } = request.userData;
+      console.log(`[PROBER] Failed completely: ${request.method} ${request.url} -> ${error.message}`);
       scraped.push({
         candidate,
         statusCode: 0,
