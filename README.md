@@ -135,6 +135,13 @@ Organizations use SDS to:
 *   Standardize API auditing processes
 *   Reduce manual testing and decoding time
 
+### ⚠️ Disclaimer
+*   **Data Accuracy:** SDS is an automated market intelligence tool. All data (including prices, wallet addresses, networks, and descriptions) is extracted directly from public HTTP responses provided by the target servers in real-time. SDS does not alter this data and cannot guarantee its absolute accuracy.
+*   **No Financial Advice:** The generated reports do not constitute financial, legal, or investment advice. Always verify wallet addresses, networks, and pricing manually before executing any cryptocurrency transactions or integrating paid APIs.
+*   **No Affiliation:** Stech and the SDS tool are not affiliated with, endorsed by, or sponsored by any of the domains or directories scanned using this tool.
+*   **User Responsibility:** Users are solely responsible for ensuring that their use of this tool complies with applicable laws, regulations, and the Terms of Service of the target domains being scanned.
+
+
 ### 📄 License
 All rights reserved under the Stech Commercial License (SCL) v2.1.
 
