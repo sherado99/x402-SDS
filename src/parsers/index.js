@@ -95,28 +95,25 @@ export function parseAllRawData(rawPaths, scrapedData) {
 }
 
 export function finalFilter(parsedCandidates, domain) {
-  return parsedCandidates.map(c => ({
-    domain,
-    path: c.path,
-    status: 'public_info',
-    x402Version: '',
-    price: c.rawPrice || '',
-    priceReadable: c.rawPrice ? `$${(parseInt(c.rawPrice, 10) / 1_000_000).toFixed(6)}` : '',
-    network: c.network || '',
-    asset: c.asset || '',
-    payTo: c.payTo || '',
-    label: c.label || '',
-    description: c.description || '',
-    httpStatus: c.httpStatus ? String(c.httpStatus) : '',
-    responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
-    errorMessage: c.errorMessage || '',
-    auditHash: c.auditHash || '',
-    timestamp: new Date().toISOString(),
-  })).filter(row => {
-    const hasPrice = row.price && row.price !== '0';
-    const hasLabel = row.label && row.label.length > 2;
-    const hasDescription = row.description && row.description.length > 5;
-    // PERBAIKAN: hanya endpoint dengan harga, label, DAN deskripsi yang lolos
-    return hasPrice && hasLabel && hasDescription;
-  });
+  return parsedCandidates
+    .filter(c => c.path) // hanya yang punya path
+    .map(c => ({
+      domain,
+      path: c.path,
+      status: c.httpStatus ? String(c.httpStatus) : 'unknown',
+      x402Version: '',
+      price: c.rawPrice || '',
+      priceReadable: c.rawPrice ? `$${(parseInt(c.rawPrice, 10) / 1_000_000).toFixed(6)}` : '',
+      network: c.network || '',
+      asset: c.asset || '',
+      payTo: c.payTo || '',
+      label: c.label || '',
+      description: c.description || '',
+      source: c.source || 'unknown',
+      httpStatus: c.httpStatus ? String(c.httpStatus) : '',
+      responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
+      errorMessage: c.errorMessage || '',
+      auditHash: c.auditHash || '',
+      timestamp: new Date().toISOString(),
+    }));
 }
