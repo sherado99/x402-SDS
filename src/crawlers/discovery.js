@@ -145,9 +145,6 @@ function extractEndpointsFromText(text, sourceLabel = 'unknown') {
 
 /**
  * HARVESTER: Search for endpoint data from the x402scan directory
- * Uses a 2-step process: 
- * 1. Get domain UUID via public.origins.search
- * 2. Fetch all complete resources via public.resources.list
  */
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
     console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
@@ -217,7 +214,6 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         let fullResources = [];
         if (listResp.statusCode === 200) {
             const listData = JSON.parse(listResp.body);
-            // Adjusting to tRPC structure (could be direct array or inside 'items' property)
             fullResources = listData?.[0]?.result?.data?.json?.items || listData?.[0]?.result?.data?.json || [];
             console.log(`[HARVESTER] Fetched ${fullResources.length} full resources using UUID.`);
         } else {
@@ -242,6 +238,7 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
             let network = '';
             let asset = '';
             let payTo = '';
+            let method = 'GET'; // Default method
 
             if (res.accepts && res.accepts.length > 0) {
                 const accept = res.accepts[0];
@@ -250,12 +247,15 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
                 network = accept.network || '';
                 asset = accept.asset || '';
                 payTo = accept.payTo || '';
+                if (accept.method) {
+                    method = accept.method.toUpperCase();
+                }
             }
 
             if (path) {
                 endpoints.push({
                     path: path,
-                    method: 'GET',
+                    method: method,
                     label: description || path.split('/').pop() || path,
                     rawPrice: price,
                     description: description || path,
