@@ -114,7 +114,7 @@ const manualPathsArray = manualPathsStr
 // Parse domain dan specificPath
 let specificPath = null;
 domain = domain.trim();
-const urlMatch = domain.match(/^(https?:\/\/ )?([^\/]+)(\/.*)?$/i);
+const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
 if (urlMatch) {
   domain = urlMatch[2];
   if (urlMatch[3]) {
