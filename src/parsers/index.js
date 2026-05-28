@@ -3,27 +3,45 @@ import { normalizePath, normalizeCandidate, uniqCandidates, isValidCandidate } f
 import { extractPrice, parseWellKnownX402, parseAgentCard, parseOpenAPI, parseHealth, parseLLMsTxt, parseJSONLike } from './extractors.js';
 import { universalExtract } from './universal.js';
 
+function cleanText(str) {
+  return (str || '').replace(/[\n\r]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function smartRouter(candidates, sourceLabel) {
   const cleaned = [];
   for (const candidate of candidates) {
     let cleanPath = candidate.path.replace(/[`\\\n\r<>]/g, '').trim();
-    if (!cleanPath.startsWith('/') || cleanPath.length < 2) continue;
-    if (cleanPath.includes('<') || cleanPath.includes('>')) continue;
-    if (candidate.label && (candidate.label.includes('<html') || candidate.label.includes('<pre>') || candidate.label.includes('<code>'))) continue;
+    // Validasi path: hanya boleh karakter standar
+    if (!/^\/[a-zA-Z0-9_\/.-]+$/.test(cleanPath)) continue;
+    if (cleanPath.length < 2 || cleanPath.length > 300) continue;
     
-    let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
-    let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
+    let cleanLabel = cleanText(candidate.label || '');
+    let cleanDesc = cleanText(candidate.description || '');
+    
+    // Abaikan label/deskripsi yang mengandung noise instruksi MCP
+    if (cleanLabel.includes('mcp__agentcash') || cleanLabel.includes('call mcp') ||
+        cleanDesc.includes('mcp__agentcash') || cleanDesc.includes('call mcp')) {
+      continue;
+    }
     
     const markdownRegex = /^(\*\*|`|_)?(GET|POST|PUT|DELETE|PATCH)\s+[^*-]+(\*\*|`|_)?\s*[-—:]\s*/i;
     cleanLabel = cleanLabel.replace(markdownRegex, '').trim();
     cleanDesc = cleanDesc.replace(markdownRegex, '').trim();
 
     if (!cleanLabel) cleanLabel = cleanPath.split('/').filter(Boolean).pop() || cleanPath;
+    if (!cleanDesc) cleanDesc = cleanLabel;
     
+    // Filter sumber: harus punya harga untuk sumber tertentu
     if (sourceLabel === 'scraper' || sourceLabel === 'llms.txt' || sourceLabel === 'mcp.json' || sourceLabel === 'api-docs') {
       if (!candidate.rawPrice || candidate.rawPrice === '0') continue;
     }
-    cleaned.push({ ...candidate, path: cleanPath, label: cleanLabel, description: cleanDesc });
+    
+    cleaned.push({ 
+      ...candidate, 
+      path: cleanPath, 
+      label: cleanLabel, 
+      description: cleanDesc 
+    });
   }
   return cleaned;
 }
@@ -51,7 +69,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
   // 2. Parse body respons dari scraper
   for (const item of scrapedData) {
     if (!item || !item.body) continue;
-    if (!item.candidate) continue; // <--- JAGA-JAGA: lewati jika candidate undefined
+    if (!item.candidate) continue;
 
     const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
@@ -98,7 +116,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
 export function finalFilter(parsedCandidates, domain) {
   return parsedCandidates
-    .filter(c => c.path)
+    .filter(c => c.path && c.rawPrice && c.label && c.description && c.description.length > 10)
     .map(c => ({
       domain,
       path: c.path,
