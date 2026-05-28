@@ -41,12 +41,13 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
 
   // 3. SCRAPER (Gabungan Harvester + Manual Paths + Cadangan Dictionary)
   let pathsToScrape = [];
+  let directFromHarvester = [];
   
   if (manualPathsArray && manualPathsArray.length > 0) {
     pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
     console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
   } else {
-    // Normalisasi hasil panen dari direktori (Bawa semua datanya!)
+    // Normalisasi hasil panen dari direktori
     const cleanHarvested = harvestedPaths.map(p => normalizeCandidate({ 
       path: p.path, 
       method: p.method, 
@@ -58,31 +59,45 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
       source: p.source 
     }));
     
+    // Simpan data Harvester untuk diproses langsung
+    directFromHarvester = cleanHarvested.filter(p => p.rawPrice && p.description);
+    
     // Gabungkan hasil panen dengan Dictionary sebagai cadangan
     const combinedPaths = [...cleanHarvested, ...BUILT_IN_DICTIONARY.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }))];
     
-    // Hapus duplikat agar mesin tidak mengetuk pintu yang sama dua kali
+    // Hapus duplikat
     const uniquePaths = Array.from(new Map(combinedPaths.map(item => [item.path, item])).values());
     
     pathsToScrape = uniquePaths.slice(0, maxPaths);
     console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${cleanHarvested.length} from Harvester, rest from Dictionary Backup)`);
   }
 
-  const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
+  // 4. PROSES DATA HARVESTER LANGSUNG JIKA ADA
+  let parsedFromHarvester = [];
+  if (directFromHarvester.length > 0) {
+    console.log(`[HARVESTER] Processing ${directFromHarvester.length} endpoints directly from API data...`);
+    parsedFromHarvester = finalFilter(directFromHarvester, base);
+  }
 
-  // 4. SCANNER
+  // 5. SCRAPER + PARSER UNTUK PROBING
+  const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
   const scannedData = scanResponses(scrapedData);
   console.log(`[SCANNER] ${scannedData.length} responses scanned`);
 
-  // 5. PARSER
   const parsedCandidates = parseAllRawData(allRawContent, scannedData);
   console.log(`[PARSER] ${parsedCandidates.length} total candidates after parsing`);
 
-  // 6. FINAL FILTER
-  const final = finalFilter(parsedCandidates, base);
-  console.log(`[FINAL] ${final.length} complete endpoints after final filter`);
+  const parsedFromProbing = finalFilter(parsedCandidates, base);
+  console.log(`[FINAL] ${parsedFromProbing.length} from probing`);
 
-  return final;
+  // 6. GABUNGKAN HASIL HARVESTER + PROBING
+  const combined = [...parsedFromHarvester, ...parsedFromProbing];
+  
+  // Hapus duplikat berdasarkan path
+  const uniqueFinal = Array.from(new Map(combined.map(item => [item.path, item])).values());
+  
+  console.log(`[FINAL] ${uniqueFinal.length} complete endpoints after merging all sources`);
+  return uniqueFinal;
 }
 
 // ============================================================
