@@ -4,13 +4,10 @@ import { extractPrice } from './extractors.js';
 
 /**
  * Fungsi bantuan untuk memotong teks menjadi ringkasan pendek.
- * Mengambil kalimat pertama (hingga 200 karakter) dari teks dokumentasi panjang.
  */
 function summarizeDescription(text = '') {
   if (!text) return '';
-  // Ambil paragraf pertama (sampai baris kosong atau newline ganda)
   const firstParagraph = text.split(/\n\n|\r\n\r\n/)[0] || text;
-  // Ambil maksimal 200 karakter, berhenti di akhir kalimat terakhir yang utuh
   if (firstParagraph.length <= 200) return firstParagraph.trim();
   const truncated = firstParagraph.substring(0, 200);
   const lastPeriod = truncated.lastIndexOf('.');
@@ -30,31 +27,27 @@ export function universalExtract(text, sourceLabel = 'unknown') {
   // ============================================================
   // 1. EKSTRAK TABEL HARGA (Markdown table)
   // ============================================================
-  const priceTable = new Map(); // key: nama endpoint (lowercase), value: harga atomik
+  const priceTable = new Map();
   const tableRegex = /\|\s*([^|]+?)\s*\|\s*\$?([\d.]+)\s*\|/gi;
   let tableMatch;
   while ((tableMatch = tableRegex.exec(raw)) !== null) {
     const name = tableMatch[1].trim().toLowerCase();
     const price = String(Math.round(parseFloat(tableMatch[2]) * 1_000_000));
-    // Hanya masukkan jika nama mengandung kata kunci API (hindari header/noise)
     if (name.includes('api') || name.includes('/') || name.includes('search') || name.includes('enrich') || name.includes('verify') || name.includes('scrape') || name.includes('crawl') || name.includes('resolve') || name.includes('lookup') || name.includes('render') || name.includes('shopping') || name.includes('news') || name.includes('image')) {
       priceTable.set(name, price);
     }
   }
   
   // ============================================================
-  // 2. PROSES KHUSUS UNTUK llms.txt: blok dokumentasi besar
+  // 2. PROSES KHUSUS UNTUK llms.txt
   // ============================================================
   if (sourceLabel === 'llms.txt') {
-    // Pola: blok dipisahkan oleh "---" atau "## " (Markdown heading level 2)
     const docBlocks = raw.split(/\n---\n|\n## /);
     
     for (const block of docBlocks) {
-      // Cari path API di blok ini
       const pathMatches = [...block.matchAll(/(?:\/api\/|\/)([a-zA-Z0-9_\/-]+)/g)];
       if (pathMatches.length === 0) continue;
       
-      // Ambil path pertama yang valid
       let extractedPath = '';
       for (const pm of pathMatches) {
         const candidate = '/' + pm[1].replace(/\/$/, '');
@@ -65,18 +58,15 @@ export function universalExtract(text, sourceLabel = 'unknown') {
       }
       if (!extractedPath) continue;
       
-      // Cari harga: cek di tabel harga dulu, baru di dalam blok
       let price = '';
       const blockLower = block.toLowerCase();
       for (const [tableName, tablePrice] of priceTable.entries()) {
-        // Cocokkan: nama endpoint di tabel muncul di blok ini
         if (blockLower.includes(tableName)) {
           price = tablePrice;
           break;
         }
       }
       
-      // Fallback: cari harga dalam teks blok
       if (!price) {
         const inlinePrice = block.match(/\$([\d.]+)/);
         if (inlinePrice) {
@@ -84,7 +74,6 @@ export function universalExtract(text, sourceLabel = 'unknown') {
         }
       }
       
-      // Ekstrak label: heading pertama atau teks tebal pertama
       let label = '';
       const headingMatch = block.match(/^#+\s*(.+)/m);
       if (headingMatch) {
@@ -94,14 +83,11 @@ export function universalExtract(text, sourceLabel = 'unknown') {
         if (boldMatch) label = boldMatch[1].trim();
       }
       if (!label) {
-        // Ambil dari nama endpoint di path
         label = extractedPath.split('/').filter(Boolean).pop() || extractedPath;
       }
       
-      // Deskripsi: paragraf pertama setelah heading
       let description = '';
       const lines = block.split('\n');
-      let afterHeading = false;
       for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('```') || trimmed.startsWith('|') || trimmed.startsWith('-')) continue;
@@ -112,12 +98,11 @@ export function universalExtract(text, sourceLabel = 'unknown') {
         }
       }
       
-      // Ringkasan deskripsi
       description = summarizeDescription(description);
       
       candidates.push({
         path: extractedPath,
-        method: 'POST', // Kebanyakan endpoint enrichment menggunakan POST
+        method: 'POST',
         rawPrice: price,
         network: '',
         asset: '',
@@ -132,7 +117,7 @@ export function universalExtract(text, sourceLabel = 'unknown') {
   }
   
   // ============================================================
-  // 3. PROSES STANDARD UNTUK SUMBER LAIN (HTML, JSON, dll.)
+  // 3. PROSES STANDARD UNTUK SUMBER LAIN
   // ============================================================
   
   // --- 3a. Ekstraksi <li> dari HTML ---
@@ -163,6 +148,8 @@ export function universalExtract(text, sourceLabel = 'unknown') {
       const stripped = liContent.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
       description = stripped.substring(0, 120);
     }
+    // Bersihkan newline dari path
+    path = path.replace(/[\n\r]/g, '');
     candidates.push({
       path, method: 'GET', rawPrice: price,
       network: '', asset: '', payTo: '',
@@ -184,9 +171,8 @@ export function universalExtract(text, sourceLabel = 'unknown') {
       continue;
     }
     const method = pathMatch[0].split(/\s+/)[0].toUpperCase();
-    const path = pathMatch[1];
+    const path = pathMatch[1].replace(/[\n\r]/g, ''); // Bersihkan path dari newline
     let price = extractPrice(block.match(/Price:\s*\$?([\d.]+)/i) ? block.match(/Price:\s*\$?([\d.]+)/i)[0] : '');
-    // Coba cocokkan heading dengan tabel harga
     if (!price && heading) {
       const headingLower = heading.toLowerCase();
       for (const [name, p] of priceTable.entries()) {
@@ -211,6 +197,10 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     if (!description) description = label;
     description = summarizeDescription(description);
     
+    // Bersihkan label dan deskripsi dari newline
+    label = label.replace(/[\n\r]/g, ' ');
+    description = description.replace(/[\n\r]/g, ' ');
+    
     candidates.push({
       path, method, rawPrice: price,
       network: '', asset: '', payTo: '',
@@ -226,6 +216,8 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     .replace(/<\s*\$/g, '&lt; $')
     .replace(/<[^>]+>/g, '\n')
     .replace(/\n\s*\n/g, '\n')
+    .replace(/[\n\r]+/g, ' ') // TAMBAHAN: ganti semua newline dengan spasi untuk mencegah kata menyambung
+    .replace(/\s+/g, ' ')
     .trim();
   
   const blocks = cleanRaw.split(/(?=\b(?:GET|POST|PUT|DELETE|PATCH)\b[\s\n]*\/)/i);
@@ -234,7 +226,9 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     const pathMatch = block.match(/(?:GET|POST|PUT|DELETE|PATCH)?[\s\n]*(\/[a-zA-Z0-9_/\-{}.:]+)/i);
     if (!pathMatch) continue;
     
-    const path = pathMatch[1].trim();
+    let path = pathMatch[1].trim();
+    // Bersihkan newline jika masih ada
+    path = path.replace(/[\n\r]/g, '');
     if (!path.startsWith('/') || path.length < 3) continue;
     if (/\.(woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico|css|js)(\?|$)/i.test(path)) continue;
     if (path.includes('/_next/') || path.includes('/static/')) continue;
@@ -246,23 +240,32 @@ export function universalExtract(text, sourceLabel = 'unknown') {
     const priceMatch = context.match(/\$([\d.]+)/);
     const price = extractPrice(priceMatch ? priceMatch[1] : '');
     
-    const lines = context.split('\n').map(l => l.trim()).filter(Boolean);
+    const lines = context.split(/\s+/).filter(Boolean); // Sudah tidak ada newline, pakai spasi
     let description = '';
     let label = '';
     
-    for (let line of lines) {
-      if (line === method || line === path || /^(<|>|&lt;|&gt;)?\s*\$[\d.]+$/.test(line)) continue;
-      
-      let cleanLine = line.replace(path, '').replace(/(<|>|&lt;|&gt;)?\s*\$[\d.]+/, '').replace(new RegExp(`^${method}\\s*`, 'i'), '').replace(/^[-—:\s]+/, '').trim();
-      if (cleanLine.length < 4) continue;
-      
-      if (cleanLine.length > 35 && !description) {
-        description = cleanLine;
-      } else if (cleanLine.length >= 4 && cleanLine.length <= 35 && !label && !/^v\d+$/i.test(cleanLine)) {
-        label = cleanLine;
+    // Karena sudah bersih dari newline, kita cari teks panjang sebagai deskripsi
+    const words = context.split(/\s+/);
+    let current = '';
+    for (const word of words) {
+      if (word === method || word === path || word.match(/^\$[\d.]+$/)) continue;
+      current += (current ? ' ' : '') + word;
+      if (current.length > 35 && !description) {
+        description = current;
+        current = '';
+      } else if (current.length >= 4 && current.length <= 35 && !label && !/^v\d+$/i.test(current)) {
+        label = current;
+        current = '';
       }
     }
-    description = summarizeDescription(description);
+    if (!description && current.length > 10) description = current;
+    
+    description = summarizeDescription(description || '');
+    label = label || description || path;
+    
+    // Bersihkan label dan deskripsi dari newline
+    label = label.replace(/[\n\r]/g, ' ');
+    description = description.replace(/[\n\r]/g, ' ');
     
     candidates.push({
       path, method, rawPrice: price,
