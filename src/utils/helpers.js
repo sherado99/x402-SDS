@@ -8,13 +8,21 @@ export function sha256(raw) {
 export function normalizePath(rawPath) {
   let p = String(rawPath || '').trim();
   if (!p) return '';
-  if (p.startsWith('http://' ) || p.startsWith('https://' )) {
-    try { const url = new URL(p); p = `${url.pathname}${url.search || ''}`; } catch { /* ignore */ }
+  
+  if (p.startsWith('http://') || p.startsWith('https://')) {
+    try { 
+      const url = new URL(p); 
+      p = `${url.pathname}${url.search || ''}`; 
+    } catch { 
+      return '/'; 
+    }
   }
-  p = p.replace(/^\/api(?=\/)/i, '');
-  p = p.replace(/\/+/g, '/');
-  p = p.replace(/\/+$/, '');
+  
+  // Bersihkan: hanya gabungkan slash ganda dan hapus trailing slash
+  p = p.replace(/\/+/g, '/').replace(/\/+$/, '');
+  
   if (!p.startsWith('/')) p = `/${p}`;
+  
   return p.toLowerCase();
 }
 
@@ -73,4 +81,3 @@ export function classifyError(errorMessage = '') {
   if (msg.includes('404') || msg.includes('not found')) return 'not_found';
   return 'network_error';
 }
-
