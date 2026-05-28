@@ -16,7 +16,7 @@
     },
     "status": {
       "type": "string",
-      "description": "Scan status: success, error, not_found, or public_info.",
+      "description": "HTTP status code returned by the endpoint, or 'unknown' if not probed.",
       "title": "Status",
       "template": "{{status}}"
     },
@@ -67,6 +67,12 @@
       "description": "Product description from the X402 offer.",
       "title": "Description",
       "template": "{{description}}"
+    },
+    "source": {
+      "type": "string",
+      "description": "Origin of the endpoint data (e.g., well-known-x402, llms.txt, scraper:402, dictionary).",
+      "title": "Source",
+      "template": "{{source}}"
     },
     "auditHash": {
       "type": "string",
