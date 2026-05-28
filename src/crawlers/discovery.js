@@ -147,7 +147,7 @@ function extractEndpointsFromText(text, sourceLabel = 'unknown') {
  * HARVESTER: Search for endpoint data from the x402scan directory
  */
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
-    console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
+    console.log(`[HARVESTER] Searching '${targetDomain}' in Public directory...`);
 
     const cleanDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
     const fetchHeaders = {
