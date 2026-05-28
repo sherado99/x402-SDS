@@ -1,4 +1,4 @@
-# X402 Domain Scanner (SDS)
+# X402 Domain Full Scanner
 **Discover, Audit, and Export X402 Payment Endpoints for AI Agents and Web3 APIs**
 
 SDS is a specialized Market Intelligence Actor on the Apify Store that scans any root domain to discover monetized API endpoints using the X402 protocol. It automatically extracts real-time pricing, wallet addresses, and network data, returning them as structured JSON alongside ready-to-download DOCX and PDF reports.
