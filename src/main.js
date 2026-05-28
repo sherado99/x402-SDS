@@ -96,8 +96,7 @@ let {
   paths: manualPathsStr = '', 
   maxPaths = DEFAULT_MAX_PATHS, 
   timeout = DEFAULT_TIMEOUT,
-  useResidentialProxy = false,
-  includeSubdomains = false
+  useResidentialProxy = false
 } = input;
 
 if (!domain) { 
@@ -135,9 +134,10 @@ if (specificPath) {
   const final = await runPipelineForDomain(domain, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
   allResults.push(...final);
 } else {
+  // Mode domain: selalu tambahkan subdomain otomatis (kecuali workers.dev/fly.dev)
   const targetDomains = [domain];
   const lowerDomain = domain.toLowerCase();
-  if (includeSubdomains && !lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
+  if (!lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
     targetDomains.push(`api.${domain}`);
   }
   for (const base of targetDomains) {
