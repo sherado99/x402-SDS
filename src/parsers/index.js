@@ -50,7 +50,9 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
   // 2. Parse body respons dari scraper
   for (const item of scrapedData) {
-    if (!item.body) continue;
+    if (!item || !item.body) continue;
+    if (!item.candidate) continue; // <--- JAGA-JAGA: lewati jika candidate undefined
+
     const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
 
@@ -96,7 +98,7 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
 export function finalFilter(parsedCandidates, domain) {
   return parsedCandidates
-    .filter(c => c.path) // hanya yang punya path
+    .filter(c => c.path)
     .map(c => ({
       domain,
       path: c.path,
