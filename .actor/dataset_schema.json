@@ -19,19 +19,8 @@
       "status": {
         "type": "string",
         "title": "Status",
-        "description": "Scan status.",
-        "enum": [
-          "success",
-          "error",
-          "not_found",
-          "public_info",
-          "timeout",
-          "blocked",
-          "unauthorized",
-          "rate_limited",
-          "network_error"
-        ],
-        "example": "success"
+        "description": "HTTP status code returned by the endpoint, or 'unknown' if not probed.",
+        "example": "402"
       },
       "x402Version": {
         "type": "string",
@@ -80,6 +69,12 @@
         "title": "Description",
         "description": "Product description from the X402 offer.",
         "example": "Ethical AI assistant that provides honest, warm presence."
+      },
+      "source": {
+        "type": "string",
+        "title": "Source",
+        "description": "Origin of the endpoint data (e.g., well-known-x402, llms.txt, scraper:402, dictionary, manual).",
+        "example": "llms.txt"
       },
       "auditHash": {
         "type": "string",
@@ -131,7 +126,7 @@
       "title": "X402 Domain Scan Results",
       "transformation": {
         "fields": [
-          "domain", "path", "status", "x402Version", "price", "priceReadable",
+          "domain", "path", "status", "source", "x402Version", "price", "priceReadable",
           "network", "asset", "payTo", "label", "description", "auditHash",
           "httpStatus", "responseTimeMs", "errorMessage", "timestamp",
           "download_docx", "download_pdf"
@@ -143,6 +138,7 @@
           "domain": { "label": "Domain", "format": "text" },
           "path": { "label": "Path", "format": "text" },
           "status": { "label": "Status", "format": "text" },
+          "source": { "label": "Source", "format": "text" },
           "x402Version": { "label": "X402 Version", "format": "text" },
           "price": { "label": "Price (raw)", "format": "text" },
           "priceReadable": { "label": "Price (USDC)", "format": "text" },
