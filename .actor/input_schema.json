@@ -32,18 +32,12 @@
       "description": "Timeout per request in milliseconds.",
       "minimum": 1000,
       "maximum": 30000,
-      "default": 5000
+      "default": 15000
     },
-"useResidentialProxy": {
-  "title": "Use Residential Proxy (Bypass Blocks)",
-  "type": "boolean",
-  "description": "Route requests through residential IPs to avoid datacenter blocks. Additional cost applies.",
-  "default": false
-},
-    "includeSubdomains": {
-      "title": "Include Subdomains",
+    "useResidentialProxy": {
+      "title": "Use Residential Proxy (Bypass Blocks)",
       "type": "boolean",
-      "description": "Also scan common subdomains like api.domain.",
+      "description": "Route requests through residential IPs to avoid datacenter blocks. Additional cost applies.",
       "default": false
     }
   },
