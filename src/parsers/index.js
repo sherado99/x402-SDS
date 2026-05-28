@@ -14,7 +14,6 @@ function smartRouter(candidates, sourceLabel) {
     let cleanLabel = (candidate.label || '').replace(/<[^>]+>/g, '').replace(/[`\\]/g, '').trim();
     let cleanDesc = (candidate.description || '').replace(/<[^>]+>/g, '').trim();
     
-    // PEMBERSIH MARKDOWN: Menghapus teks seperti "**GET /api/concerts** — "
     const markdownRegex = /^(\*\*|`|_)?(GET|POST|PUT|DELETE|PATCH)\s+[^*-]+(\*\*|`|_)?\s*[-—:]\s*/i;
     cleanLabel = cleanLabel.replace(markdownRegex, '').trim();
     cleanDesc = cleanDesc.replace(markdownRegex, '').trim();
@@ -52,7 +51,6 @@ export function parseAllRawData(rawPaths, scrapedData) {
   // 2. Parse body respons dari scraper
   for (const item of scrapedData) {
     if (!item.body) continue;
-    // TAMBAHKAN bodyHash, responseTime, errorMessage di sini:
     const { candidate, body, statusCode, bodyHash, responseTime, errorMessage } = item;
     const path = normalizePath(candidate.path);
 
@@ -71,12 +69,11 @@ export function parseAllRawData(rawPaths, scrapedData) {
             label: offer.label || candidate.label || '',
             description: offer.description || candidate.description || '',
             source: 'scraper:402',
-            // MASUKKAN DATANYA KE SINI:
             httpStatus: statusCode,
             auditHash: bodyHash,
             responseTimeMs: responseTime,
             errorMessage: errorMessage
-          } ));
+          }));
           continue;
         }
       } catch { /* not JSON */ }
@@ -84,21 +81,20 @@ export function parseAllRawData(rawPaths, scrapedData) {
 
     const extracted = universalExtract(body, `scraper:${path}`);
     const cleaned = smartRouter(extracted, 'scraper');
-    // MASUKKAN JUGA KE HASIL UNIVERSAL EXTRACT:
     const cleanedWithMeta = cleaned.map(c => ({
       ...c,
       httpStatus: statusCode,
       auditHash: bodyHash,
       responseTimeMs: responseTime,
       errorMessage: errorMessage
-    } ));
+    }));
     if (cleanedWithMeta.length > 0) candidates.push(...cleanedWithMeta);
   }
 
   return uniqCandidates(candidates).filter(isValidCandidate);
 }
 
-export function finalFilter(parsedCandidates, domain ) {
+export function finalFilter(parsedCandidates, domain) {
   return parsedCandidates.map(c => ({
     domain,
     path: c.path,
@@ -111,8 +107,7 @@ export function finalFilter(parsedCandidates, domain ) {
     payTo: c.payTo || '',
     label: c.label || '',
     description: c.description || '',
-    // PERBAIKAN: Bungkus dengan String() agar menjadi teks
-    httpStatus: c.httpStatus ? String(c.httpStatus ) : '',
+    httpStatus: c.httpStatus ? String(c.httpStatus) : '',
     responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
     errorMessage: c.errorMessage || '',
     auditHash: c.auditHash || '',
@@ -120,7 +115,8 @@ export function finalFilter(parsedCandidates, domain ) {
   })).filter(row => {
     const hasPrice = row.price && row.price !== '0';
     const hasLabel = row.label && row.label.length > 2;
-    return hasPrice || hasLabel;
+    const hasDescription = row.description && row.description.length > 5;
+    // PERBAIKAN: hanya endpoint dengan harga, label, DAN deskripsi yang lolos
+    return hasPrice && hasLabel && hasDescription;
   });
 }
-
