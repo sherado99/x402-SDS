@@ -1,25 +1,25 @@
 {
   "title": "X402 Domain Scanner",
-  "description": "Scan a root domain for X402 payment endpoints. Enter a domain and optionally list specific paths to check (one per line). Leave paths empty to use the built-in dictionary.",
+  "description": "Scan a root domain for X402 payment endpoints. Enter a domain and optionally list specific paths to check (one per line).",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "domain": {
       "title": "Root Domain",
       "type": "string",
-      "description": "Domain to scan, e.g., stech-api.sheradogilang.workers.dev",
+      "description": "Enter the domain to scan (without https://). Example: stech-api.sheradogilang.workers.dev",
       "editor": "textfield",
-      "prefill": ""
+      "prefill": "stech-api.sheradogilang.workers.dev"
     },
     "paths": {
-      "title": "Paths to Check (Optional)",
+      "title": "Specific Paths to Check (Optional)",
       "type": "string",
-      "description": "List specific paths to check, one per line. Leave empty to use the built-in dictionary.",
+      "description": "List specific paths to check, one per line. Must start with a slash (/). Leave empty to auto-discover all endpoints.",
       "editor": "textarea",
-      "prefill": ""
+      "prefill": "/x402/sapi\n/x402/scdft\n/x402/spdet"
     },
     "maxPaths": {
-      "title": "Max Paths",
+      "title": "Max Paths (Dictionary Fallback)",
       "type": "integer",
       "description": "Maximum number of paths to try when using the built-in dictionary.",
       "minimum": 1,
