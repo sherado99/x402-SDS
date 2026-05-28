@@ -124,9 +124,8 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
     return [...discovered.values()];
 }
 
-/**
- * Fungsi bantuan untuk ekstrak endpoint dari teks (fallback)
- */
+
+// Fungsi bantuan untuk ekstrak endpoint dari teks (fallback)
 function extractEndpointsFromText(text, sourceLabel = 'unknown') {
     const endpoints = [];
     const regex = /(GET|POST|PUT|DELETE)\s+(\/[^\s]+)\s+(.+?)\s+US\$([\d.]+)/gi;
@@ -143,6 +142,127 @@ function extractEndpointsFromText(text, sourceLabel = 'unknown') {
         });
     }
     return endpoints;
+}
+
+/**
+ * HARVESTER: Mencari data endpoint dari direktori x402scan
+ * Gunakan API public.origins.search untuk mendapatkan UUID domain
+ */
+export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
+    console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
+    
+    const cleanDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+    const fetchHeaders = {
+        'User-Agent': getRandomUserAgent(),
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    };
+
+    try {
+        // 1. Cari UUID domain menggunakan public.origins.search
+        const searchInput = encodeURIComponent(JSON.stringify({
+            "0": { "json": { "search": cleanDomain, "limit": 5 } },
+            "1": { "json": { "search": cleanDomain, "limit": 5 } }
+        }));
+        
+        const searchUrl = `https://www.x402scan.com/api/trpc/public.origins.search,public.resources.search?batch=1&input=${searchInput}`;
+        
+        const searchResp = await got(searchUrl, {
+            headers: fetchHeaders,
+            timeout: { request: Math.max(timeout, 15000) },
+            throwHttpErrors: false,
+            retry: { limit: 2 }
+        });
+
+        if (searchResp.statusCode !== 200) {
+            console.log(`[HARVESTER] Search API failed with status ${searchResp.statusCode}.`);
+            return [];
+        }
+
+        const searchData = JSON.parse(searchResp.body);
+        
+        // Bagian 0: origins.search
+        const originsResult = searchData?.[0]?.result?.data?.json || [];
+        // Bagian 1: resources.search (lebih lengkap, ada harga dan deskripsi)
+        const resourcesResult = searchData?.[1]?.result?.data?.json || [];
+
+        console.log(`[HARVESTER] API returned ${originsResult.length} origins, ${resourcesResult.length} resources.`);
+
+        // Cari origin yang cocok
+        let matchedOrigin = null;
+        for (const origin of originsResult) {
+            const originDomain = (origin.origin || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+            if (originDomain === cleanDomain || originDomain.includes(cleanDomain) || cleanDomain.includes(originDomain)) {
+                matchedOrigin = origin;
+                break;
+            }
+        }
+
+        if (!matchedOrigin) {
+            console.log(`[HARVESTER] Domain '${cleanDomain}' not found in API response.`);
+            return [];
+        }
+
+        console.log(`[HARVESTER] Found origin: ${matchedOrigin.origin} (${matchedOrigin.resources?.length || 0} basic resources)`);
+
+        // 2. Proses resource dari origins (data dasar: path, payTo)
+        const basicResources = matchedOrigin.resources || [];
+        const endpoints = [];
+
+        for (const basicRes of basicResources) {
+            // Ekstrak path dari URL resource
+            const resourceUrl = basicRes.resource || '';
+            const pathMatch = resourceUrl.match(/https?:\/\/[^\/]+(\/.*)/);
+            const path = pathMatch ? pathMatch[1] : resourceUrl;
+            
+            // Ambil payTo dari basic resource
+            const payTo = basicRes.accepts?.[0]?.payTo || '';
+
+            // Cari resource lengkap dari resourcesResult (ada harga, deskripsi, dll.)
+            const fullResource = resourcesResult.find(r => r.id === basicRes.id);
+            
+            let price = '';
+            let description = '';
+            let network = '';
+            let asset = '';
+            
+            if (fullResource?.accepts?.[0]) {
+                const accept = fullResource.accepts[0];
+                price = String(accept.maxAmountRequired || accept.amount || '');
+                description = accept.description || '';
+                network = accept.network || '';
+                asset = accept.asset || '';
+            }
+
+            // Fallback: coba ambil dari basicRes jika fullResource tidak ada
+            if (!price && basicRes.accepts?.[0]) {
+                const basicAccept = basicRes.accepts[0];
+                price = String(basicAccept.maxAmountRequired || basicAccept.amount || '');
+            }
+
+            // Hanya tambahkan jika punya path
+            if (path) {
+                endpoints.push({
+                    path: path,
+                    method: 'GET',
+                    label: description || path.split('/').pop() || path,
+                    rawPrice: price,
+                    description: description || path,
+                    network: network,
+                    asset: asset,
+                    payTo: payTo,
+                    source: 'x402scan-api'
+                });
+            }
+        }
+
+        console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints from API.`);
+        return endpoints;
+
+    } catch (err) {
+        console.log(`[HARVESTER] API error: ${err.message}`);
+        return [];
+    }
 }
 
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
