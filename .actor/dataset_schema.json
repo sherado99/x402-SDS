@@ -16,10 +16,10 @@
         "description": "Full path of the endpoint that was checked.",
         "example": "/x402/sapi"
       },
-      "status": {
+      "httpStatus": {
         "type": "string",
-        "title": "Status",
-        "description": "HTTP status code returned by the endpoint, or 'unknown' if not probed.",
+        "title": "HTTP Status",
+        "description": "HTTP status code returned by the endpoint.",
         "example": "402"
       },
       "x402Version": {
@@ -82,12 +82,6 @@
         "description": "SHA-256 hash of the raw response body for verifiable claims.",
         "example": "a1b2c3d4e5f6..."
       },
-      "httpStatus": {
-        "type": "string",
-        "title": "HTTP Status",
-        "description": "HTTP status code returned by the endpoint.",
-        "example": "402"
-      },
       "responseTimeMs": {
         "type": "string",
         "title": "Response Time (ms)",
@@ -119,16 +113,16 @@
         "example": "https://api.apify.com/v2/key-value-stores/STORE_ID/records/OUTPUT.pdf"
       }
     },
-    "required": ["domain", "path", "status", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
+    "required": ["domain", "path", "httpStatus", "timestamp", "download_docx", "download_pdf", "priceReadable", "auditHash"]
   },
   "views": {
     "overview": {
       "title": "X402 Domain Scan Results",
       "transformation": {
         "fields": [
-          "domain", "path", "status", "source", "x402Version", "price", "priceReadable",
+          "domain", "path", "httpStatus", "source", "x402Version", "price", "priceReadable",
           "network", "asset", "payTo", "label", "description", "auditHash",
-          "httpStatus", "responseTimeMs", "errorMessage", "timestamp",
+          "responseTimeMs", "errorMessage", "timestamp",
           "download_docx", "download_pdf"
         ]
       },
@@ -137,7 +131,7 @@
         "properties": {
           "domain": { "label": "Domain", "format": "text" },
           "path": { "label": "Path", "format": "text" },
-          "status": { "label": "Status", "format": "text" },
+          "httpStatus": { "label": "HTTP Status", "format": "text" },
           "source": { "label": "Source", "format": "text" },
           "x402Version": { "label": "X402 Version", "format": "text" },
           "price": { "label": "Price (raw)", "format": "text" },
@@ -148,7 +142,6 @@
           "label": { "label": "Label", "format": "text" },
           "description": { "label": "Description", "format": "text" },
           "auditHash": { "label": "Audit Hash", "format": "text" },
-          "httpStatus": { "label": "HTTP Status", "format": "text" },
           "responseTimeMs": { "label": "Response Time (ms)", "format": "text" },
           "errorMessage": { "label": "Error Message", "format": "text" },
           "timestamp": { "label": "Timestamp", "format": "text" },
