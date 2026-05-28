@@ -3,7 +3,7 @@ import { CheerioCrawler } from 'crawlee';
 import * as cheerio from 'cheerio';
 import got from 'got';
 
-// Rotasi User-Agent untuk menghindari blokir
+// Rotate User-Agents to avoid being blocked
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -91,7 +91,7 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
         async requestHandler({ request, response, $, enqueueLinks }) {
             const contentType = response?.headers?.['content-type'] || '';
             const isHtml = contentType.includes('text/html') || contentType.includes('application/xhtml');
-            
+
             if (!isHtml) {
                 const bodyText = String(response?.body || '');
                 if (bodyText.length > 10) discovered.set(request.url, { url: request.url, html: bodyText });
@@ -124,8 +124,7 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
     return [...discovered.values()];
 }
 
-
-// Fungsi bantuan untuk ekstrak endpoint dari teks (fallback)
+// Helper function to extract endpoints from text (fallback)
 function extractEndpointsFromText(text, sourceLabel = 'unknown') {
     const endpoints = [];
     const regex = /(GET|POST|PUT|DELETE)\s+(\/[^\s]+)\s+(.+?)\s+US\$([\d.]+)/gi;
@@ -145,12 +144,14 @@ function extractEndpointsFromText(text, sourceLabel = 'unknown') {
 }
 
 /**
- * HARVESTER: Mencari data endpoint dari direktori x402scan
- * Gunakan API public.origins.search untuk mendapatkan UUID domain
+ * HARVESTER: Search for endpoint data from the x402scan directory
+ * Uses a 2-step process: 
+ * 1. Get domain UUID via public.origins.search
+ * 2. Fetch all complete resources via public.resources.list
  */
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
     console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
-    
+
     const cleanDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
     const fetchHeaders = {
         'User-Agent': getRandomUserAgent(),
@@ -159,14 +160,13 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
     };
 
     try {
-        // 1. Cari UUID domain menggunakan public.origins.search
+        // STEP 1: Search for the domain UUID using public.origins.search
         const searchInput = encodeURIComponent(JSON.stringify({
-            "0": { "json": { "search": cleanDomain, "limit": 5 } },
-            "1": { "json": { "search": cleanDomain, "limit": 5 } }
+            "0": { "json": { "search": cleanDomain, "limit": 5 } }
         }));
-        
-        const searchUrl = `https://www.x402scan.com/api/trpc/public.origins.search,public.resources.search?batch=1&input=${searchInput}`;
-        
+
+        const searchUrl = `https://www.x402scan.com/api/trpc/public.origins.search?batch=1&input=${searchInput}`;
+
         const searchResp = await got(searchUrl, {
             headers: fetchHeaders,
             timeout: { request: Math.max(timeout, 15000) },
@@ -180,15 +180,9 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         }
 
         const searchData = JSON.parse(searchResp.body);
-        
-        // Bagian 0: origins.search
         const originsResult = searchData?.[0]?.result?.data?.json || [];
-        // Bagian 1: resources.search (lebih lengkap, ada harga dan deskripsi)
-        const resourcesResult = searchData?.[1]?.result?.data?.json || [];
 
-        console.log(`[HARVESTER] API returned ${originsResult.length} origins, ${resourcesResult.length} resources.`);
-
-        // Cari origin yang cocok
+        // Find the matching origin to get the UUID
         let matchedOrigin = null;
         for (const origin of originsResult) {
             const originDomain = (origin.origin || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
@@ -198,49 +192,66 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
             }
         }
 
-        if (!matchedOrigin) {
+        if (!matchedOrigin || !matchedOrigin.id) {
             console.log(`[HARVESTER] Domain '${cleanDomain}' not found in API response.`);
             return [];
         }
 
-        console.log(`[HARVESTER] Found origin: ${matchedOrigin.origin} (${matchedOrigin.resources?.length || 0} basic resources)`);
+        const uuid = matchedOrigin.id;
+        console.log(`[HARVESTER] Found origin UUID: ${uuid}`);
 
-        // 2. Proses resource dari origins (data dasar: path, payTo)
-        const basicResources = matchedOrigin.resources || [];
+        // STEP 2: Call the second API to get ALL complete resources based on the UUID
+        const listInput = encodeURIComponent(JSON.stringify({
+            "0": { "json": { "originId": uuid, "limit": 100 } }
+        }));
+
+        const listUrl = `https://www.x402scan.com/api/trpc/public.resources.list?batch=1&input=${listInput}`;
+        
+        const listResp = await got(listUrl, {
+            headers: fetchHeaders,
+            timeout: { request: Math.max(timeout, 15000) },
+            throwHttpErrors: false,
+            retry: { limit: 2 }
+        });
+
+        let fullResources = [];
+        if (listResp.statusCode === 200) {
+            const listData = JSON.parse(listResp.body);
+            // Adjusting to tRPC structure (could be direct array or inside 'items' property)
+            fullResources = listData?.[0]?.result?.data?.json?.items || listData?.[0]?.result?.data?.json || [];
+            console.log(`[HARVESTER] Fetched ${fullResources.length} full resources using UUID.`);
+        } else {
+            console.log(`[HARVESTER] Failed to fetch full resources. Status: ${listResp.statusCode}`);
+        }
+
+        // Fallback to basic resources from the first API if the second fails or is empty
+        if (!fullResources || fullResources.length === 0) {
+            fullResources = matchedOrigin.resources || [];
+            console.log(`[HARVESTER] Fallback to ${fullResources.length} basic resources.`);
+        }
+
+        // STEP 3: Extract and format data into endpoints
         const endpoints = [];
-
-        for (const basicRes of basicResources) {
-            // Ekstrak path dari URL resource
-            const resourceUrl = basicRes.resource || '';
+        for (const res of fullResources) {
+            const resourceUrl = res.resource || '';
             const pathMatch = resourceUrl.match(/https?:\/\/[^\/]+(\/.*)/);
             const path = pathMatch ? pathMatch[1] : resourceUrl;
-            
-            // Ambil payTo dari basic resource
-            const payTo = basicRes.accepts?.[0]?.payTo || '';
 
-            // Cari resource lengkap dari resourcesResult (ada harga, deskripsi, dll.)
-            const fullResource = resourcesResult.find(r => r.id === basicRes.id);
-            
             let price = '';
             let description = '';
             let network = '';
             let asset = '';
-            
-            if (fullResource?.accepts?.[0]) {
-                const accept = fullResource.accepts[0];
+            let payTo = '';
+
+            if (res.accepts && res.accepts.length > 0) {
+                const accept = res.accepts[0];
                 price = String(accept.maxAmountRequired || accept.amount || '');
                 description = accept.description || '';
                 network = accept.network || '';
                 asset = accept.asset || '';
+                payTo = accept.payTo || '';
             }
 
-            // Fallback: coba ambil dari basicRes jika fullResource tidak ada
-            if (!price && basicRes.accepts?.[0]) {
-                const basicAccept = basicRes.accepts[0];
-                price = String(basicAccept.maxAmountRequired || basicAccept.amount || '');
-            }
-
-            // Hanya tambahkan jika punya path
             if (path) {
                 endpoints.push({
                     path: path,
@@ -256,7 +267,7 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
             }
         }
 
-        console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints from API.`);
+        console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints.`);
         return endpoints;
 
     } catch (err) {
@@ -264,4 +275,3 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         return [];
     }
 }
-
