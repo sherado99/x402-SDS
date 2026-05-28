@@ -120,7 +120,6 @@ export function finalFilter(parsedCandidates, domain) {
     .map(c => ({
       domain,
       path: c.path,
-      status: c.httpStatus ? String(c.httpStatus) : 'unknown',
       x402Version: '',
       price: c.rawPrice || '',
       priceReadable: c.rawPrice ? `$${(parseInt(c.rawPrice, 10) / 1_000_000).toFixed(6)}` : '',
@@ -130,10 +129,10 @@ export function finalFilter(parsedCandidates, domain) {
       label: c.label || '',
       description: c.description || '',
       source: c.source || 'unknown',
+      auditHash: c.auditHash || '',
       httpStatus: c.httpStatus ? String(c.httpStatus) : '',
       responseTimeMs: c.responseTimeMs ? String(c.responseTimeMs) : '',
       errorMessage: c.errorMessage || '',
-      auditHash: c.auditHash || '',
       timestamp: new Date().toISOString(),
     }));
 }
