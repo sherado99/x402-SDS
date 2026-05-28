@@ -166,7 +166,7 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         
         // Pattern untuk mengekstrak informasi endpoint dari halaman x402scan
         // Format: METHOD /path Label Price: $X.XX Network: network
-        const endpointPattern = /(GET|POST|PUT|DELETE)\s+(\/[^\s]+)\s+([^$]+)\s+\$([\d.]+)/gi;
+        const endpointPattern = /(GET|POST|PUT|DELETE)\s+(\/[^\s]+)\s+(.+?)\s+US\$([\d.]+)/gi;
         let match;
         
         while ((match = endpointPattern.exec(bodyText)) !== null) {
