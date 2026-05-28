@@ -20,7 +20,7 @@ function scanResponses(scraped) {
 async function runPipelineForDomain(base, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration) {
   console.log(`\n[SDS] === Pipeline for ${base}${specificPath || ''} ===\n`);
 
-  // Mode spesifik path (dari URL)
+  // Mode spesifik path
   if (specificPath) {
     console.log('[SDS] Specific path mode – skipping discovery.');
     const candidate = normalizeCandidate({ path: specificPath, method: 'GET', source: 'manual' });
@@ -36,68 +36,42 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
   const allRawContent = [...rawAPISources, ...htmlPages.map(p => ({ source: 'scraper', content: p.html }))];
   console.log(`[CRAWLER] ${rawAPISources.length} API sources + ${htmlPages.length} HTML pages crawled`);
 
-  // 2. THE HARVESTER (Cari di Direktori x402scan.com)
+  // 2. HARVESTER (API x402scan)
   const harvestedPaths = await crawlDirectoryPlatform(base, timeout, proxyConfiguration);
 
-  // 3. SCRAPER (Gabungan Harvester + Manual Paths + Cadangan Dictionary)
-  let pathsToScrape = [];
+  // 3. PROSES LANGSUNG DATA HARVESTER YANG LENGKAP
   let directFromHarvester = [];
-  
+  if (harvestedPaths.length > 0) {
+    // Filter yang punya harga dan deskripsi
+    const completeHarvested = harvestedPaths.filter(p => p.rawPrice && p.description);
+    directFromHarvester = finalFilter(completeHarvested, base);
+    console.log(`[HARVESTER] ${directFromHarvester.length} complete endpoints from API data.`);
+  }
+
+  // 4. SCRAPER UNTUK PROBING (endpoint target + dictionary)
+  let probedResults = [];
   if (manualPathsArray && manualPathsArray.length > 0) {
-    pathsToScrape = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} manual paths from UI`);
-  } else {
-    // Normalisasi hasil panen dari direktori
-    const cleanHarvested = harvestedPaths.map(p => normalizeCandidate({ 
-      path: p.path, 
-      method: p.method, 
-      rawPrice: p.rawPrice,
-      label: p.label,
-      description: p.description,
-      network: p.network,
-      asset: p.asset,
-      source: p.source 
-    }));
-    
-    // Simpan data Harvester untuk diproses langsung
-    directFromHarvester = cleanHarvested.filter(p => p.rawPrice && p.description);
-    
-    // Gabungkan hasil panen dengan Dictionary sebagai cadangan
-    const combinedPaths = [...cleanHarvested, ...BUILT_IN_DICTIONARY.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }))];
-    
-    // Hapus duplikat
-    const uniquePaths = Array.from(new Map(combinedPaths.map(item => [item.path, item])).values());
-    
-    pathsToScrape = uniquePaths.slice(0, maxPaths);
-    console.log(`[SCRAPER] Using ${pathsToScrape.length} paths (${cleanHarvested.length} from Harvester, rest from Dictionary Backup)`);
+    const candidates = manualPathsArray.map(p => normalizeCandidate({ path: p, method: 'GET', source: 'manual-ui' }));
+    const scrapedData = await scrapeEndpoints(base, candidates, timeout, proxyConfiguration);
+    const scannedData = scanResponses(scrapedData);
+    const parsedCandidates = parseAllRawData(allRawContent, scannedData);
+    probedResults = finalFilter(parsedCandidates, base);
+  } else if (harvestedPaths.length === 0) {
+    // Fallback ke dictionary hanya jika Harvester kosong
+    const dictionaryCandidates = BUILT_IN_DICTIONARY.slice(0, maxPaths).map(p => normalizeCandidate({ path: p, method: 'GET', source: 'dictionary-backup' }));
+    const scrapedData = await scrapeEndpoints(base, dictionaryCandidates, timeout, proxyConfiguration);
+    const scannedData = scanResponses(scrapedData);
+    const parsedCandidates = parseAllRawData(allRawContent, scannedData);
+    probedResults = finalFilter(parsedCandidates, base);
   }
 
-  // 4. PROSES DATA HARVESTER LANGSUNG JIKA ADA
-  let parsedFromHarvester = [];
-  if (directFromHarvester.length > 0) {
-    console.log(`[HARVESTER] Processing ${directFromHarvester.length} endpoints directly from API data...`);
-    parsedFromHarvester = finalFilter(directFromHarvester, base);
-  }
-
-  // 5. SCRAPER + PARSER UNTUK PROBING
-  const scrapedData = await scrapeEndpoints(base, pathsToScrape, timeout, proxyConfiguration);
-  const scannedData = scanResponses(scrapedData);
-  console.log(`[SCANNER] ${scannedData.length} responses scanned`);
-
-  const parsedCandidates = parseAllRawData(allRawContent, scannedData);
-  console.log(`[PARSER] ${parsedCandidates.length} total candidates after parsing`);
-
-  const parsedFromProbing = finalFilter(parsedCandidates, base);
-  console.log(`[FINAL] ${parsedFromProbing.length} from probing`);
-
-  // 6. GABUNGKAN HASIL HARVESTER + PROBING
-  const combined = [...parsedFromHarvester, ...parsedFromProbing];
+  // 5. GABUNGKAN SEMUA HASIL
+  const allResults = [...directFromHarvester, ...probedResults];
+  // Deduplikasi berdasarkan path
+  const uniqueResults = Array.from(new Map(allResults.map(item => [item.path, item])).values());
   
-  // Hapus duplikat berdasarkan path
-  const uniqueFinal = Array.from(new Map(combined.map(item => [item.path, item])).values());
-  
-  console.log(`[FINAL] ${uniqueFinal.length} complete endpoints after merging all sources`);
-  return uniqueFinal;
+  console.log(`[FINAL] ${uniqueResults.length} total unique endpoints.`);
+  return uniqueResults;
 }
 
 // ============================================================
@@ -119,13 +93,11 @@ if (!domain) {
   await Actor.exit(); 
 }
 
-// Parse manual paths dari UI
 const manualPathsArray = manualPathsStr
   .split('\n')
   .map(p => p.trim())
   .filter(p => p.startsWith('/'));
 
-// Parse domain dan specificPath
 let specificPath = null;
 domain = domain.trim();
 const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
@@ -139,26 +111,15 @@ if (urlMatch) {
   }
 }
 
-// Setup Proxy
 const proxyAgent = getProxyAgent(useResidentialProxy);
 const proxyConfiguration = await getProxyConfiguration(useResidentialProxy);
 
 const allResults = [];
+const targetDomains = [domain]; // Hanya domain yang diinput, tanpa tambahan subdomain
 
-if (specificPath) {
-  const final = await runPipelineForDomain(domain, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
+for (const base of targetDomains) {
+  const final = await runPipelineForDomain(base, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
   allResults.push(...final);
-} else {
-  // Mode domain: tambahkan subdomain hanya jika domain bukan subdomain dan bukan workers.dev/fly.dev
-  const targetDomains = [domain];
-  const lowerDomain = domain.toLowerCase();
-  if (!lowerDomain.startsWith('api.') && !lowerDomain.endsWith('.workers.dev') && !lowerDomain.endsWith('.fly.dev')) {
-    targetDomains.push(`api.${domain}`);
-  }
-  for (const base of targetDomains) {
-    const final = await runPipelineForDomain(base, null, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration);
-    allResults.push(...final);
-  }
 }
 
 // ============================================================
