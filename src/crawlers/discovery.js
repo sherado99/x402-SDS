@@ -3,6 +3,7 @@ import { CheerioCrawler } from 'crawlee';
 import * as cheerio from 'cheerio';
 import got from 'got';
 
+// Rotasi User-Agent untuk menghindari blokir
 const USER_AGENTS = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -124,13 +125,12 @@ export async function crawlHTMLPages(base, timeout, proxyConfiguration) {
 }
 
 /**
- * Ekstrak endpoint dari teks menggunakan regex universal
+ * Fungsi bantuan untuk ekstrak endpoint dari teks (fallback)
  */
-function extractEndpointsFromText(text, sourceLabel = 'direct-scrape') {
+function extractEndpointsFromText(text, sourceLabel = 'unknown') {
     const endpoints = [];
     const regex = /(GET|POST|PUT|DELETE)\s+(\/[^\s]+)\s+(.+?)\s+US\$([\d.]+)/gi;
     let match;
-
     while ((match = regex.exec(text)) !== null) {
         endpoints.push({
             path: match[2],
@@ -138,19 +138,18 @@ function extractEndpointsFromText(text, sourceLabel = 'direct-scrape') {
             label: match[3].trim(),
             rawPrice: String(Math.round(parseFloat(match[4]) * 1_000_000)),
             description: match[3].trim(),
-            network: '',
-            asset: '',
+            network: '', asset: '',
             source: sourceLabel
         });
     }
-
     return endpoints;
 }
 
 /**
- * HARVESTER: Mencari data endpoint dari berbagai sumber
- * 1. x402scan directory (via halaman utama atau API)
- * 2. Scraping langsung domain target (fallback)
+ * HARVESTER: Mencari data endpoint dari direktori x402scan
+ * 1. Coba API publik (POST) untuk mendapatkan UUID domain
+ * 2. Fallback: scraping halaman utama x402scan
+ * 3. Fallback terakhir: scraping langsung domain target
  */
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
     console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
@@ -158,124 +157,121 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
     const cleanDomain = targetDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
     const fetchHeaders = {
         'User-Agent': getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
     };
 
     // ============================================================
-    // 1. COBA X402SCAN DIRECTORY (VIA HALAMAN UTAMA)
+    // 1. COBA API PUBLIK: server.getAll (POST)
     // ============================================================
     try {
-        const mainPageUrl = 'https://www.x402scan.com/';
-        const mainResp = await got(mainPageUrl, {
+        console.log('[HARVESTER] Trying API: server.getAll...');
+        const apiUrl = 'https://www.x402scan.com/api/trpc/server.getAll';
+        const resp = await got.post(apiUrl, {
             headers: fetchHeaders,
+            json: {}, // body kosong, karena kita ingin semua server
             timeout: { request: Math.max(timeout, 15000) },
             throwHttpErrors: false,
-            retry: { limit: 1 } // Hanya sekali coba, jangan buang waktu
+            retry: { limit: 1 }
         });
 
-        if (mainResp.statusCode === 200) {
-            const $ = cheerio.load(mainResp.body);
-            const serverLinks = {};
+        if (resp.statusCode === 200) {
+            const data = JSON.parse(resp.body);
+            // Struktur respons tRPC biasanya: result.data.json
+            const servers = data?.result?.data?.json || [];
+            
+            console.log(`[HARVESTER] API returned ${servers.length} servers.`);
 
-            $('a[href^="/server/"]').each((i, el) => {
-                const href = $(el).attr('href');
-                if (!href) return;
-                
-                const uuidMatch = href.match(/\/server\/([a-f0-9-]+)/);
-                if (!uuidMatch) return;
-                
-                const uuid = uuidMatch[1];
-                const parentText = $(el).closest('div, li, tr').text() || $(el).text();
-                const domainMatch = parentText.match(/([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/);
-                
-                if (domainMatch) {
-                    const foundDomain = domainMatch[0].toLowerCase();
-                    if (!serverLinks[foundDomain]) {
-                        serverLinks[foundDomain] = uuid;
-                    }
-                }
+            // Cari server yang domainnya cocok
+            const matched = servers.find(s => {
+                const sDomain = (s.domain || '').replace(/^https?:\/\//i, '').toLowerCase();
+                return sDomain === cleanDomain;
             });
 
-            console.log(`[HARVESTER] Found ${Object.keys(serverLinks).length} servers on main page.`);
-
-            // Cari UUID untuk domain kita
-            let matchedUUID = serverLinks[cleanDomain];
-            if (!matchedUUID) {
-                for (const [d, u] of Object.entries(serverLinks)) {
-                    if (d.includes(cleanDomain) || cleanDomain.includes(d)) {
-                        matchedUUID = u;
-                        break;
-                    }
-                }
-            }
-
-            if (matchedUUID) {
-                console.log(`[HARVESTER] UUID found: ${matchedUUID}`);
+            if (matched && matched.id) {
+                console.log(`[HARVESTER] Found UUID via API: ${matched.id}`);
                 
-                // Akses halaman detail
-                const detailUrl = `https://www.x402scan.com/server/${matchedUUID}`;
-                const detailResp = await got(detailUrl, {
+                // Ambil detail server (resources) dari server yang sudah ditemukan
+                const detailUrl = 'https://www.x402scan.com/api/trpc/server.getById';
+                const detailResp = await got.post(detailUrl, {
                     headers: fetchHeaders,
+                    json: { id: matched.id },
                     timeout: { request: Math.max(timeout, 15000) },
                     throwHttpErrors: false,
                     retry: { limit: 1 }
                 });
 
                 if (detailResp.statusCode === 200) {
-                    const endpoints = extractEndpointsFromText(detailResp.body, 'x402scan-directory');
+                    const detailData = JSON.parse(detailResp.body);
+                    const resources = detailData?.result?.data?.json?.resources || [];
+                    
+                    const endpoints = resources.map(r => ({
+                        path: r.path || r.endpoint || '',
+                        method: r.method || 'GET',
+                        label: r.name || r.label || '',
+                        rawPrice: String(Math.round((r.price || 0) * 1_000_000)),
+                        description: r.description || r.name || '',
+                        network: r.network || '',
+                        asset: r.asset || '',
+                        source: 'x402scan-api'
+                    })).filter(ep => ep.path);
+
                     if (endpoints.length > 0) {
-                        console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints from x402scan.`);
+                        console.log(`[HARVESTER] Successfully retrieved ${endpoints.length} endpoints via API.`);
                         return endpoints;
                     }
                 }
+            } else {
+                console.log(`[HARVESTER] Domain '${cleanDomain}' not found in API response.`);
             }
+        } else {
+            console.log(`[HARVESTER] API server.getAll failed (status ${resp.statusCode}).`);
         }
     } catch (err) {
-        console.log(`[HARVESTER] x402scan main page error: ${err.message}`);
+        console.log(`[HARVESTER] API error: ${err.message}`);
     }
 
     // ============================================================
-    // 2. FALLBACK: SCRAPING LANGSUNG DOMAIN TARGET
+    // 2. FALLBACK: SCRAPING HALAMAN UTAMA X402SCAN
+    // ============================================================
+    console.log('[HARVESTER] Falling back to x402scan main page scraping...');
+    
+    try {
+        const mainResp = await got('https://www.x402scan.com/', {
+            headers: { ...fetchHeaders, 'Accept': 'text/html' },
+            timeout: { request: Math.max(timeout, 15000) },
+            throwHttpErrors: false,
+            retry: { limit: 1 }
+        });
+
+        if (mainResp.statusCode === 200) {
+            const endpoints = extractEndpointsFromText(mainResp.body, 'x402scan-html');
+            if (endpoints.length > 0) {
+                console.log(`[HARVESTER] Extracted ${endpoints.length} endpoints from main page.`);
+                return endpoints;
+            }
+        }
+    } catch (err) {
+        console.log(`[HARVESTER] Main page scraping error: ${err.message}`);
+    }
+
+    // ============================================================
+    // 3. FALLBACK TERAKHIR: SCRAPING DOMAIN TARGET
     // ============================================================
     console.log(`[HARVESTER] Attempting direct scrape of https://${cleanDomain}...`);
     
     try {
-        const directUrl = `https://${cleanDomain}`;
-        const directResp = await got(directUrl, {
-            headers: fetchHeaders,
+        const directResp = await got(`https://${cleanDomain}`, {
+            headers: { ...fetchHeaders, 'Accept': 'text/html' },
             timeout: { request: Math.max(timeout, 15000) },
             throwHttpErrors: false,
             retry: { limit: 2 }
         });
 
         if (directResp.statusCode === 200) {
-            // Coba ekstrak endpoint dari halaman utama
             const endpoints = extractEndpointsFromText(directResp.body, 'direct-scrape');
             if (endpoints.length > 0) {
                 console.log(`[HARVESTER] Successfully scraped ${endpoints.length} endpoints from domain.`);
-                return endpoints;
-            }
-
-            // Jika tidak ada pola US$, coba cari pola harga lain
-            // Misalnya: $X.XX per request, Price: $X.XX, dll.
-            const altRegex = /(\/[^\s]+).*?\$([\d.]+)/gi;
-            let altMatch;
-            while ((altMatch = altRegex.exec(directResp.body)) !== null) {
-                endpoints.push({
-                    path: altMatch[1],
-                    method: 'GET',
-                    label: altMatch[1],
-                    rawPrice: String(Math.round(parseFloat(altMatch[2]) * 1_000_000)),
-                    description: altMatch[1],
-                    network: '',
-                    asset: '',
-                    source: 'direct-scrape-fallback'
-                });
-            }
-            
-            if (endpoints.length > 0) {
-                console.log(`[HARVESTER] Extracted ${endpoints.length} endpoints using alternative regex.`);
                 return endpoints;
             }
         }
@@ -283,6 +279,6 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         console.log(`[HARVESTER] Direct scrape error: ${err.message}`);
     }
 
-    console.log('[HARVESTER] No data found from any source.');
+    console.log('[HARVESTER] No data found.');
     return [];
 }
