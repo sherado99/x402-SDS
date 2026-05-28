@@ -145,10 +145,6 @@ function extractEndpointsFromText(text, sourceLabel = 'unknown') {
     return endpoints;
 }
 
-/**
- * HARVESTER: Mencari data endpoint dari direktori x402scan
- * Gunakan API public.origins.search untuk mendapatkan UUID domain
- */
 export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfiguration) {
     console.log(`[HARVESTER] Searching '${targetDomain}' in x402scan.com directory...`);
     
@@ -181,51 +177,85 @@ export async function crawlDirectoryPlatform(targetDomain, timeout, proxyConfigu
         }
 
         const searchData = JSON.parse(searchResp.body);
+        
+        // Bagian 0: origins.search (berisi UUID dan resource dasar)
         const originsResult = searchData?.[0]?.result?.data?.json || [];
+        // Bagian 1: resources.search (berisi resource lengkap dengan harga)
+        const resourcesResult = searchData?.[1]?.result?.data?.json || [];
 
-        console.log(`[HARVESTER] API returned ${originsResult.length} origins.`);
+        console.log(`[HARVESTER] API returned ${originsResult.length} origins, ${resourcesResult.length} resources.`);
 
-        // Cari UUID dari origins
-        let matchedUUID = null;
+        // Cari origin yang cocok dengan domain kita
+        let matchedOrigin = null;
         for (const origin of originsResult) {
-            const originDomain = (origin.domain || origin.url || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+            const originDomain = (origin.origin || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
             if (originDomain === cleanDomain) {
-                matchedUUID = origin.id;
+                matchedOrigin = origin;
                 break;
             }
         }
 
-        if (!matchedUUID) {
+        // Fallback: jika tidak cocok, coba dengan domain yang mengandung
+        if (!matchedOrigin) {
+            for (const origin of originsResult) {
+                const originDomain = (origin.origin || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase();
+                if (originDomain.includes(cleanDomain) || cleanDomain.includes(originDomain)) {
+                    matchedOrigin = origin;
+                    break;
+                }
+            }
+        }
+
+        if (!matchedOrigin) {
             console.log(`[HARVESTER] Domain '${cleanDomain}' not found in API response.`);
             return [];
         }
 
-        console.log(`[HARVESTER] Found UUID via API: ${matchedUUID}`);
+        console.log(`[HARVESTER] Found origin: ${matchedOrigin.origin} (${matchedOrigin.resources?.length || 0} resources)`);
 
-        // 2. Akses halaman detail server dengan UUID
-        const detailUrl = `https://www.x402scan.com/server/${matchedUUID}`;
-        const detailResp = await got(detailUrl, {
-            headers: { ...fetchHeaders, 'Accept': 'text/html' },
-            timeout: { request: Math.max(timeout, 15000) },
-            throwHttpErrors: false,
-            retry: { limit: 2 }
-        });
-
-        if (detailResp.statusCode !== 200) {
-            console.log(`[HARVESTER] Failed to fetch server detail (status ${detailResp.statusCode}).`);
-            return [];
-        }
-
-        // 3. Ekstrak endpoint dari halaman detail
-        const endpoints = extractEndpointsFromText(detailResp.body, 'x402scan-directory');
+        // 2. Proses resource dari origins (cukup untuk sebagian besar data)
+        const endpoints = [];
         
-        if (endpoints.length > 0) {
-            console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints from x402scan.`);
-            return endpoints;
+        if (matchedOrigin.resources) {
+            for (const resource of matchedOrigin.resources) {
+                // Ekstrak path dari URL resource
+                const resourceUrl = resource.resource || '';
+                const pathMatch = resourceUrl.match(/https?:\/\/[^\/]+(\/.*)/);
+                const path = pathMatch ? pathMatch[1] : resourceUrl;
+                
+                // Ambil harga dari resourcesResult yang cocok
+                let price = '';
+                let description = '';
+                let network = '';
+                let asset = '';
+                let payTo = '';
+                
+                const matchedResource = resourcesResult.find(r => r.id === resource.id);
+                if (matchedResource?.accepts?.[0]) {
+                    const accept = matchedResource.accepts[0];
+                    price = String(accept.maxAmountRequired || '');
+                    description = accept.description || '';
+                    network = accept.network || '';
+                    asset = accept.asset || '';
+                    payTo = accept.payTo || '';
+                }
+                
+                endpoints.push({
+                    path: path || resourceUrl,
+                    method: 'GET',
+                    label: description || path,
+                    rawPrice: price,
+                    description: description,
+                    network: network,
+                    asset: asset,
+                    payTo: payTo,
+                    source: 'x402scan-api'
+                });
+            }
         }
 
-        console.log('[HARVESTER] No endpoints found on detail page.');
-        return [];
+        console.log(`[HARVESTER] Successfully extracted ${endpoints.length} endpoints from API.`);
+        return endpoints;
 
     } catch (err) {
         console.log(`[HARVESTER] API error: ${err.message}`);
