@@ -80,27 +80,26 @@ SDS generates multiple output formats in a single run.
 
 ### 📤 Example Output
 ```json
-[
-  {
-    "domain": "stech-api.sheradogilang.workers.dev",
-    "path": "/proxy/qr-encoding",
-    "x402Version": "2",
-    "price": "1000",
-    "priceReadable": "$0.001000",
-    "network": "eip155:8453",
-    "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    "payTo": "0x2bb72231EeD303cc91a462A1fA738b42B6a9ac6d",
-    "label": "Generate QR codes and encode/decode data in any format, instantly.",
-    "description": "Generate QR codes and encode/decode data in any format, instantly.",
-    "source": "scraper:402",
-    "auditHash": "2e340710e3e9ac366518164ae206220514d5900083d0a7abecb28f1f90f203f0",
-    "httpStatus": "402",
-    "responseTimeMs": "2390",
-    "timestamp": "2026-05-28T18:23:53.501Z",
-    "download_docx": "https://api.apify.com/v2/key-value-stores/.../OUTPUT.docx",
-    "download_pdf": "https://api.apify.com/v2/key-value-stores/.../OUTPUT.pdf"
-  }
-]
+[{
+  "domain": "stech-api.sheradogilang.workers.dev",
+  "path": "/x402/scdft",
+  "x402Version": "2",
+  "price": "1100000",
+  "priceReadable": "$1.100000",
+  "network": "eip155:8453",
+  "asset": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  "payTo": "0x6428761Db59894899b26809503ac83b7790C6fB0",
+  "label": "Ethical AI that transforms raw complaints into clear, honest, actionable reports.",
+  "description": "Ethical AI that transforms raw complaints into clear, honest, actionable reports.",
+  "source": "scraper:402",
+  "auditHash": "55b3e70254628b65fae5091cc3f819a0f60415a008dffdef7cfaa46ec0041dcf",
+  "httpStatus": "402",
+  "responseTimeMs": "2388",
+  "errorMessage": "",
+  "timestamp": "2026-05-30T17:07:38.567Z",
+  "download_docx": "https://api.apify.com/v2/key-value-stores/qI5pToncELMaYrhrP/records/OUTPUT.docx?disableRedirect=true",
+  "download_pdf": "https://api.apify.com/v2/key-value-stores/qI5pToncELMaYrhrP/records/OUTPUT.pdf?disableRedirect=true"
+}]
 ```
 
 ### 🧪 Example Workflow (Market Analyst)
