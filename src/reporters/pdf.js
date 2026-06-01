@@ -45,7 +45,7 @@ export async function generatePDF(domain, results, totalFound = 0, totalProbed =
       const lockedCount = totalFound - totalProbed;
       doc.moveDown(2);
       doc.fontSize(12).fillColor('red')
-         .text(`🔒 ${lockedCount} ADDITIONAL ENDPOINTS REMAIN UNAUDITED.`, { align: 'center' });
+         .text(`[LOCKED] ${lockedCount} ADDITIONAL ENDPOINTS REMAIN UNAUDITED.`, { align: 'center' });
       doc.fontSize(10).fillColor('gray')
          .text(`Please top up your balance on our website to unlock the full audit report.`, { align: 'center' });
     }
