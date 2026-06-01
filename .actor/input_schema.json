@@ -7,7 +7,7 @@
     "domain": {
       "title": "Root Domain",
       "type": "string",
-      "description": "Enter the domain to scan (without https://). Example: stech-api.sheradogilang.workers.dev",
+      "description": "Enter the domain to scan (without https:// ). Example: stech-api.sheradogilang.workers.dev",
       "editor": "textfield",
       "prefill": "stech-api.sheradogilang.workers.dev"
     },
@@ -40,13 +40,14 @@
       "description": "Route requests through residential IPs to avoid datacenter blocks. Additional cost applies.",
       "default": false
     },
-      "limit": {
+    "limit": {
       "title": "Probe Limit",
       "type": "integer",
       "description": "Maximum number of endpoints to actively probe (useful for teaser/credit systems).",
       "minimum": 1,
       "maximum": 1000,
       "default": 100
-    },
+    }
+  },
   "required": ["domain"]
 }
