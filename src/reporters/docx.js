@@ -34,7 +34,7 @@ export async function generateDOCX(domain, results, totalFound = 0, totalProbed 
   if (totalFound > totalProbed) {
     const lockedCount = totalFound - totalProbed;
     children.push(new Paragraph({ 
-      children: [new TextRun({ text: `🔒 ${lockedCount} ADDITIONAL ENDPOINTS REMAIN UNAUDITED.`, color: "FF0000", bold: true })],
+      children: [new TextRun({ text: `[LOCKED] ${lockedCount} ADDITIONAL ENDPOINTS REMAIN UNAUDITED.`, color: "FF0000", bold: true })],
       spacing: { before: 240, after: 60 },
       alignment: AlignmentType.CENTER
     }));
