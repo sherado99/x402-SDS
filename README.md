@@ -1,7 +1,7 @@
 # X402 Domain Full Scanner
 **Discover, Audit, and Export X402 Payment Endpoints for AI Agents and Web3 APIs**
 
-SDS is a specialized Market Intelligence Actor on the Apify Store that scans any root domain to discover monetized API endpoints using the X402 protocol. It automatically extracts real-time pricing, wallet addresses, and network data, returning them as structured JSON alongside ready-to-download DOCX and PDF reports.
+DFS is a specialized Market Intelligence Actor on the Apify Store that scans any root domain to discover monetized API endpoints using the X402 protocol. It automatically extracts real-time pricing, wallet addresses, and network data, returning them as structured JSON alongside ready-to-download DOCX and PDF reports.
 
 It is especially useful for tasks such as:
 *   Auditing AI Agent monetization structures
@@ -9,14 +9,14 @@ It is especially useful for tasks such as:
 *   Building directories of paid AI services
 *   Verifying X402 protocol compliance (v1 and v2)
 
-SDS can process a single domain and probe dozens of endpoints in a single run. Each endpoint is verified individually, ensuring the data is accurate and up-to-date.
+DFS can process a single domain and probe dozens of endpoints in a single run. Each endpoint is verified individually, ensuring the data is accurate and up-to-date.
 
-SDS helps researchers and developers map the emerging Agent Economy with precision.
+DFS helps researchers and developers map the emerging Agent Economy with precision.
 
-Unlike generic web scrapers, SDS is purpose-built for the X402 protocol. It actively triggers `402 Payment Required` responses and decodes complex Base64 headers to extract hidden billing information.
+Unlike generic web scrapers, DFS is purpose-built for the X402 protocol. It actively triggers `402 Payment Required` responses and decodes complex Base64 headers to extract hidden billing information.
 
-### 🎯 Who SDS Is For
-SDS is designed for professionals and organizations that need to track, audit, or utilize monetized AI APIs.
+### 🎯 Who DFS Is For
+DFS is designed for professionals and organizations that need to track, audit, or utilize monetized AI APIs.
 
 **Web3 Researchers & Analysts**
 Map the Agent Economy, track API pricing trends, and discover which blockchain networks are dominating the AI space.
@@ -28,17 +28,17 @@ Audit your own monetized endpoints to ensure compliance, or analyze competitors'
 Automatically populate directories and databases with verified, real-time data of paid AI services.
 
 **Automation Engineers**
-Use SDS as a discovery component in workflows built with n8n, Make, Zapier, or custom applications to automatically fund and consume AI APIs.
+Use DFS as a discovery component in workflows built with n8n, Make, Zapier, or custom applications to automatically fund and consume AI APIs.
 
-### 📣 Why SDS Matters
+### 📣 Why DFS Matters
 Discovering X402 endpoints manually is a tedious and highly technical process. To find a single API's price, a developer usually has to:
 1. Search for hidden `.well-known` files or query third-party directories.
 2. Manually send HTTP requests to trigger a `402 Payment Required` error.
 3. Intercept the HTTP headers and manually decode Base64 strings just to read the price and wallet address.
 
-SDS automates this entire pipeline in seconds. 
+DFS automates this entire pipeline in seconds. 
 
-You simply provide a domain (e.g., `stech-api.sheradogilang.workers.dev`), and SDS will intelligently harvest the paths, probe the endpoints, decode the Base64 headers, and hand you a clean, professional PDF report containing the exact price, asset (e.g., USDC), and wallet address for every API on that domain.
+You simply provide a domain (e.g., `stech-api.sheradogilang.workers.dev`), and DFS will intelligently harvest the paths, probe the endpoints, decode the Base64 headers, and hand you a clean, professional PDF report containing the exact price, asset (e.g., USDC), and wallet address for every API on that domain.
 
 ### ⚙️ Two Ways to Use SDS
 | As a Standalone Tool | As a Workflow Component |
@@ -58,7 +58,7 @@ You simply provide a domain (e.g., `stech-api.sheradogilang.workers.dev`), and S
 *   **Bypass Blocks** — Optional residential proxy support to bypass strict Cloudflare or WAF protections.
 
 ### 📄 Output Formats
-SDS generates multiple output formats in a single run.
+DFS generates multiple output formats in a single run.
 
 | Format | Purpose |
 | :--- | :--- |
@@ -122,22 +122,22 @@ As a published Apify Actor, SDS can be used with:
 Users connect their own accounts and control their own workflows.
 
 ### ❗ Important Notes
-*   **403 Errors during discovery are normal:** Many modern APIs block standard web scrapers. SDS is designed to handle this gracefully by falling back to the Harvester and active probing.
+*   **403 Errors during discovery are normal:** Many modern APIs block standard web scrapers. DFS is designed to handle this gracefully by falling back to the Harvester and active probing.
 *   **Public Data Only:** SDS only extracts data that is publicly exposed by the target server via HTTP 402 responses or public directories.
-*   **Rate Limiting:** SDS is built to be a "polite" scanner. It uses a strict concurrency limit and delays to ensure target servers are not overwhelmed.
+*   **Rate Limiting:** DFS is built to be a "polite" scanner. It uses a strict concurrency limit and delays to ensure target servers are not overwhelmed.
 *   Files remain available in your Apify run outputs until you delete them.
 
 ### 💼 Business Value
-Organizations use SDS to:
+Organizations use DFS to:
 *   Gain real-time market intelligence on AI API pricing
 *   Automate the discovery of Web3 monetization structures
 *   Standardize API auditing processes
 *   Reduce manual testing and decoding time
 
 ### ⚠️ Disclaimer
-*   **Data Accuracy:** SDS is an automated market intelligence tool. All data (including prices, wallet addresses, networks, and descriptions) is extracted directly from public HTTP responses provided by the target servers in real-time. SDS does not alter this data and cannot guarantee its absolute accuracy.
+*   **Data Accuracy:** DFS is an automated market intelligence tool. All data (including prices, wallet addresses, networks, and descriptions) is extracted directly from public HTTP responses provided by the target servers in real-time. DFS does not alter this data and cannot guarantee its absolute accuracy.
 *   **No Financial Advice:** The generated reports do not constitute financial, legal, or investment advice. Always verify wallet addresses, networks, and pricing manually before executing any cryptocurrency transactions or integrating paid APIs.
-*   **No Affiliation:** Stech and the SDS tool are not affiliated with, endorsed by, or sponsored by any of the domains or directories scanned using this tool.
+*   **No Affiliation:** Stech and the DFS tool are not affiliated with, endorsed by, or sponsored by any of the domains or directories scanned using this tool.
 *   **User Responsibility:** Users are solely responsible for ensuring that their use of this tool complies with applicable laws, regulations, and the Terms of Service of the target domains being scanned.
 
 
