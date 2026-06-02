@@ -18,11 +18,11 @@ function scanResponses(scraped) {
 }
 
 async function runPipelineForDomain(base, specificPath, manualPathsArray, timeout, maxPaths, proxyAgent, proxyConfiguration, limit) {
-  console.log(`\n[SDS] === Pipeline for ${base}${specificPath || ''} ===\n`);
+  console.log(`\n[DFS] === Pipeline for ${base}${specificPath || ''} ===\n`);
 
   if (specificPath) {
-    console.log('[SDS] Specific path mode – skipping discovery.');
-    const candidate = normalizeCandidate({ path: specificPath, method: 'GET', source: 'manual' });
+    console.log('[DFS] Specific path mode – skipping discovery.');
+    const candidate = normalizeCandidate({ path: specificPath, method: 'POST', source: 'manual' });
     const scrapedData = await scrapeEndpoints(base, [candidate], timeout, proxyConfiguration);
     const scannedData = scanResponses(scrapedData);
     const parsedCandidates = parseAllRawData([], scannedData);
