@@ -22,7 +22,7 @@ async function runPipelineForDomain(base, specificPath, manualPathsArray, timeou
 
   if (specificPath) {
     console.log('[DFS] Specific path mode – skipping discovery.');
-    const candidate = normalizeCandidate({ path: specificPath, method: 'POST', source: 'manual' });
+    const candidate = normalizeCandidate({ path: specificPath, method: 'GET', source: 'manual' });
     const scrapedData = await scrapeEndpoints(base, [candidate], timeout, proxyConfiguration);
     const scannedData = scanResponses(scrapedData);
     const parsedCandidates = parseAllRawData([], scannedData);
