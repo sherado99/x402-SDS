@@ -20,7 +20,7 @@ export async function fetchTextSource(url, timeout, label, proxyAgent) {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             const options = {
-                method: 'GET',
+                method: 'POST',
                 timeout: { request: Math.max(timeout || 15000, 15000) + (attempt * 5000) },
                 throwHttpErrors: false,
                 retry: { limit: 0 },
