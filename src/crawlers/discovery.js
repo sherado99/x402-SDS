@@ -32,7 +32,15 @@ export async function fetchTextSource(url, timeout, label, proxyAgent) {
             };
             if (proxyAgent) options.agent = { https: proxyAgent };
 
-            const response = await got(url, options);
+            let response = await got(url, options);
+            
+            // AUTO-RETRY: Jika GET gagal dengan 405 atau 404, coba dengan POST
+            if ((response.statusCode === 405 || response.statusCode === 404) && options.method === 'GET') {
+                console.log(`[FETCH] ${label}: GET returned ${response.statusCode}, retrying with POST...`);
+                options.method = 'POST';
+                response = await got(url, options);
+            }
+
             if (response.statusCode === 200 && response.body && response.body.length > 10) {
                 console.log(`[FETCH] ${label}: SUCCESS (${response.body.length} bytes, attempt ${attempt + 1})`);
                 return response.body;
@@ -53,7 +61,6 @@ export async function fetchTextSource(url, timeout, label, proxyAgent) {
     console.log(`[FETCH] ${label}: All attempts failed.`);
     return null;
 }
-
 export async function crawlAPISources(base, timeout, proxyAgent) {
     const rawPaths = [];
     const sources = [
