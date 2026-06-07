@@ -104,7 +104,7 @@ if (!domain) {
 const manualPathsArray = manualPathsStr.split('\n').map(p => p.trim()).filter(p => p.startsWith('/'));
 let specificPath = null;
 domain = domain.trim();
-const urlMatch = domain.match(/^(https?:\/\/ )?([^\/]+)(\/.*)?$/i);
+const urlMatch = domain.match(/^(https?:\/\/)?([^\/]+)(\/.*)?$/i);
 if (urlMatch) {
   domain = urlMatch[2];
   if (urlMatch[3]) {
